@@ -28,6 +28,6 @@ updater = DataUpdater(host=ConfigPostgreSQL.HOST,
                       password=ConfigPostgreSQL.PASSWORD,
                       binance_api_key=ConfigBinance.BINANCE_API_KEY,
                       binance_api_secret=ConfigBinance.BINANCE_API_SECRET,
-                      symbo_pairs=['BTCUSDT']
+                      symbol_pairs=['BTCUSDT',]
                       )
 updater.test_background_updater(60)

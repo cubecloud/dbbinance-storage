@@ -587,8 +587,12 @@ class DataUpdaterMeta(PostgreSQLDatabase):
 
         if symbol_pairs is None:
             self.symbol_pairs: list = ['BTCUSDT']
+        else:
+            self.symbol_pairs = symbol_pairs
         if timeframes is None:
             self.timeframes: list = ['1m']
+        else:
+            self.timeframes = timeframes
 
         if binance_api_key.lower() != "dummy" or binance_api_secret.lower() != "dummy":
             """ Connect to Binance """
