@@ -1,7 +1,7 @@
 import logging
-from config.configbinance import ConfigBinance
-from config.configpostgresql import ConfigPostgreSQL
-from fetcher.datafetcher import DataUpdater
+from dbbinance.config.configbinance import ConfigBinance
+from dbbinance.config.configpostgresql import ConfigPostgreSQL
+from dbbinance.fetcher.datafetcher import DataUpdater
 
 version = 0.71
 
