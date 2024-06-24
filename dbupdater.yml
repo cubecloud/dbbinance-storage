@@ -20,6 +20,6 @@ dependencies:
   - psycopg2>=2.9.3
   - apscheduler
   - pip:
-      - git+https://github.com/cubecloud/secure_apikey.git
+      - git+https://github.com/cubecloud/secureapikey.git
       - git+https://github.com/cubecloud/mlthread-tools.git
 prefix: /home/cubecloud/anaconda3/envs/dbupdater

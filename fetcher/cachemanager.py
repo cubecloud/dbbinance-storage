@@ -1,7 +1,7 @@
 import sys
 from typing import Union
 from collections import OrderedDict
-import mlthread_tools.syncing as syncing
+import syncing
 import logging
 
 __version__ = 0.011

@@ -1,4 +1,4 @@
-from secure_apikey.secure import Secure
+from secureapikey.secureaes import Secure
 
 __version__ = 0.004
 
