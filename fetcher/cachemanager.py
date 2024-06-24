@@ -1,7 +1,7 @@
 import sys
 from typing import Union
 from collections import OrderedDict
-import syncing
+from mlthread_tools.multithreaded_mutex import mlt_mutex
 import logging
 
 __version__ = 0.011
@@ -30,7 +30,7 @@ class CacheManager:
         return self.__cache
 
     def update_cache(self, key, value):
-        with syncing.threads_lock:
+        with mlt_mutex:
             value_size = sys.getsizeof(value)
             if value_size > self.max_memory_bytes:
                 logger.warning(f"{self.__class__.__name__}: "
