@@ -1,0 +1,12 @@
+numpy>=1.19.2
+pandas>=1.1.5,<2.0.0
+python-binance==1.0.19
+pycryptodome~=3.11
+python-dotenv>=0.19.1
+scikit-learn>=0.23.2
+typing-extensions>=3.7.4
+pytz>=2020.4
+requests~=2.31.0
+websockets==9.1
+psycopg2>=2.9.3
+apscheduler==3.10.4

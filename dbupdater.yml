@@ -1,0 +1,25 @@
+name: dbupdater
+channels:
+  - conda-forge
+  - esri
+  - jiayi_anaconda
+  - defaults
+dependencies:
+  - pip>=21.0.1
+  - setuptools>=51.0.0
+  - numpy>=1.19.2
+  - pandas>=1.1.5,<2.0.0
+  - python-binance==1.0.19
+  - pycryptodome~=3.11
+  - python-dotenv>=0.19.1
+  - scikit-learn>=0.23.2
+  - typing-extensions>=3.7.4
+  - pytz>=2020.4
+  - requests
+  - websockets==9.1
+  - psycopg2>=2.9.3
+  - apscheduler
+  - pip:
+      - git+https://github.com/cubecloud/secure_apikey.git
+      - git+https://github.com/cubecloud/mlthread-tools.git
+prefix: /home/cubecloud/anaconda3/envs/dbupdater
