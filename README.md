@@ -22,3 +22,8 @@ Postgresql must be installed, and database and users created BEFORE
 ## Attention
 
 Environment file for conda 'db-updater.yml' contains HARD prefix to env location. Correct it before using to create ENV
+
+# Usage:
+
+import dbbinance
+
