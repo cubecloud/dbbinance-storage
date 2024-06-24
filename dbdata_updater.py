@@ -3,7 +3,7 @@ from config.configbinance import ConfigBinance
 from config.configpostgresql import ConfigPostgreSQL
 from fetcher.datafetcher import DataUpdater
 
-version = 0.0013
+version = 0.71
 
 logger = logging.getLogger()
 

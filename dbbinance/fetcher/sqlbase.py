@@ -89,7 +89,7 @@ class SQLMeta:
 
 
 if __name__ == "__main__":
-    from config.configpostgresql import ConfigPostgreSQL
+    from dbbinance.config.configpostgresql import ConfigPostgreSQL
 
     test_sql = SQLMeta(host=ConfigPostgreSQL.HOST,
                        database=ConfigPostgreSQL.DATABASE,

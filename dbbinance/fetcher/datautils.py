@@ -10,7 +10,7 @@ from typing import List, Tuple, Union
 
 from sklearn.utils import compute_class_weight
 
-from fetcher.constants import Constants
+from dbbinance.fetcher.constants import Constants
 
 __version__ = 0.0022
 

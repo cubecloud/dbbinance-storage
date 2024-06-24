@@ -9,10 +9,10 @@ from datetime import timezone
 
 from pandas import Timestamp
 
-from fetcher.constants import Constants
-from fetcher.sqlbase import SQLMeta, handle_errors
-from fetcher.cachemanager import CacheManager
-from fetcher.datautils import convert_timeframe_to_freq
+from dbbinance.fetcher.constants import Constants
+from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors
+from dbbinance.fetcher.cachemanager import CacheManager
+from dbbinance.fetcher.datautils import convert_timeframe_to_freq
 from collections import OrderedDict
 from dotenv import load_dotenv, find_dotenv
 
@@ -1001,11 +1001,12 @@ class DataFetcher(DataUpdaterMeta):
 
 
 if __name__ == "__main__":
-    from config.configpostgresql import ConfigPostgreSQL
+    from dbbinance.config.configpostgresql import ConfigPostgreSQL
+    from secureapikey.secureaes import Secure
 
     logger.setLevel(logging.DEBUG)
 
-    file_handler = logging.FileHandler('mylog.log')
+    file_handler = logging.FileHandler('datafetcher.log')
     file_handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
@@ -1017,42 +1018,43 @@ if __name__ == "__main__":
     logger.addHandler(console_handler)
 
     logging.getLogger('apscheduler').setLevel(logging.DEBUG)
-
-    from secure_apikey.secure import Secure
+    """
+    Various Checks
+    """
 
     """ Decrypt binance api key and binance api secret """
-    # secure_key = Secure()
-    # _binance_api_key, _binance_api_secret = secure_key.get_key()
+    secure_key = Secure()
+    _binance_api_key, _binance_api_secret = secure_key.get_key('BINANCE', use_env_salt=True)
 
-    # updater = DataUpdater(host=ConfigPostgreSQL.HOST,
-    #                       database=ConfigPostgreSQL.DATABASE,
-    #                       user=ConfigPostgreSQL.USER,
-    #                       password=ConfigPostgreSQL.PASSWORD,
-    #                       binance_api_key=_binance_api_key,
-    #                       binance_api_secret=_binance_api_secret,
-    #                       )
+    updater = DataUpdater(host=ConfigPostgreSQL.HOST,
+                          database=ConfigPostgreSQL.DATABASE,
+                          user=ConfigPostgreSQL.USER,
+                          password=ConfigPostgreSQL.PASSWORD,
+                          binance_api_key=_binance_api_key,
+                          binance_api_secret=_binance_api_secret,
+                          )
     # updater.test_background_updater()
-    # updater.drop_duplicates_rows(table_name="spot_data_btcusdt_1m")
+    updater.drop_duplicates_rows(table_name="spot_data_btcusdt_1m")
 
-    # """ Start testing get_data_as_df method """
-    # start_datetime = datetime.datetime.strptime('01 Aug 2017', '%d %b %Y').replace(tzinfo=timezone.utc)
-    # _data_df = updater.get_data_as_df(table_name="spot_data_btcusdt_1m",
-    #                                   start=start_datetime,
-    #                                   end=datetime.datetime.now(timezone.utc),
-    #                                   use_cols=Constants.ohlcv_cols,
-    #                                   use_dtypes=Constants.ohlcv_dtypes
-    #                                   )
-    # _data_df['open_time'] = pd.to_datetime(_data_df['open_time'], unit='ms')
-    # _data_df['open_time'] = pd.to_datetime(_data_df['open_time'],
-    #                                        infer_datetime_format=True,
-    #                                        format=Constants.default_datetime_format)
-    #
-    # _data_df['open_time'] = DataRepair.convert_timestamp_to_datetime(_data_df['open_time'])
-    # _data_df = _data_df.set_index('open_time', inplace=False)
-    #
-    # print(_data_df.head(15).to_string())
-    # print(_data_df.tail(15).to_string())
-    # """ End testing get_data_as_df method """
+    """ Start testing get_data_as_df method """
+    start_datetime = datetime.datetime.strptime('01 Aug 2017', '%d %b %Y').replace(tzinfo=timezone.utc)
+    _data_df = updater.get_data_as_df(table_name="spot_data_btcusdt_1m",
+                                      start=start_datetime,
+                                      end=datetime.datetime.now(timezone.utc),
+                                      use_cols=Constants.ohlcv_cols,
+                                      use_dtypes=Constants.ohlcv_dtypes
+                                      )
+    _data_df['open_time'] = pd.to_datetime(_data_df['open_time'], unit='ms')
+    _data_df['open_time'] = pd.to_datetime(_data_df['open_time'],
+                                           infer_datetime_format=True,
+                                           format=Constants.default_datetime_format)
+
+    _data_df['open_time'] = DataRepair.convert_timestamp_to_datetime(_data_df['open_time'])
+    _data_df = _data_df.set_index('open_time', inplace=False)
+
+    print(_data_df.head(15).to_string())
+    print(_data_df.tail(15).to_string())
+    """ End testing get_data_as_df method """
 
     """ Start testing resample_to_timeframe method and cached option"""
     fetcher = DataFetcher(host=ConfigPostgreSQL.HOST,
@@ -1063,6 +1065,7 @@ if __name__ == "__main__":
                           binance_api_secret='dummy',
                           )
 
+    print("\nResampling of same period and compare results with 'cached=True' option\n")
     start_datetime = datetime.datetime.strptime('01 Aug 2018', '%d %b %Y').replace(tzinfo=timezone.utc)
     end_datetime = datetime.datetime.now(timezone.utc)
     # end_datetime = datetime.datetime.now(timezone.utc) - datetime.timedelta(minutes=1)
@@ -1088,6 +1091,7 @@ if __name__ == "__main__":
                                                cached=True)
     print(_data_df_1.head(2).to_string())
     print(_data_df_1.tail(1).to_string())
+    print("\nCompare result:\n")
     print(_data_df.compare(_data_df_1, align_axis=0).to_string())
     fetcher2 = DataFetcher(host=ConfigPostgreSQL.HOST,
                            database=ConfigPostgreSQL.DATABASE,
@@ -1099,17 +1103,19 @@ if __name__ == "__main__":
     print(start_datetime, end_datetime)
     end_datetime = datetime.datetime.now(timezone.utc) - datetime.timedelta(minutes=1)
     # end_datetime = datetime.datetime.now(timezone.utc)
+    print("\nResampling of same period and compare results with 'cached=False' option\n")
     print(start_datetime, end_datetime)
     _data_df_3 = fetcher2.resample_to_timeframe(table_name="spot_data_btcusdt_1m",
                                                 start=start_datetime,
                                                 end=end_datetime,
-                                                to_timeframe="30m",
+                                                to_timeframe="1h",
                                                 origin="start",
                                                 use_cols=Constants.ohlcv_cols,
                                                 use_dtypes=Constants.ohlcv_dtypes,
                                                 open_time_index=False,
-                                                cached=True)
+                                                cached=False)
     print(_data_df_3.head(2).to_string())
     print(_data_df_3.tail(1).to_string())
-    # print(_data_df.compare(_data_df_3, align_axis=0).to_string())
+    print("\nCompare result:\n")
+    print(_data_df.compare(_data_df_3, align_axis=0).to_string())
     """ End testing resample_to_timeframe method """
