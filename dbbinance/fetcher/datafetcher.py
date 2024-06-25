@@ -1056,7 +1056,7 @@ if __name__ == "__main__":
     print(_data_df.tail(15).to_string())
     """ End testing get_data_as_df method """
 
-    """ Start testing resample_to_timeframe method and cached option"""
+    """ Start testing resample_to_timeframe method and 'cached' option"""
     fetcher = DataFetcher(host=ConfigPostgreSQL.HOST,
                           database=ConfigPostgreSQL.DATABASE,
                           user=ConfigPostgreSQL.USER,
@@ -1067,8 +1067,9 @@ if __name__ == "__main__":
 
     print("\nResampling of same period and compare results with 'cached=True' option\n")
     start_datetime = datetime.datetime.strptime('01 Aug 2018', '%d %b %Y').replace(tzinfo=timezone.utc)
-    end_datetime = datetime.datetime.now(timezone.utc)
-    # end_datetime = datetime.datetime.now(timezone.utc) - datetime.timedelta(minutes=1)
+    """ we need a gap for testing """
+    end_datetime = floor_time(datetime.datetime.now(timezone.utc) - datetime.timedelta(minutes=1))
+    print(f'Start datetime - end datetime: {start_datetime} - {end_datetime}\n')
     _data_df = fetcher.resample_to_timeframe(table_name="spot_data_btcusdt_1m",
                                              start=start_datetime,
                                              end=end_datetime,
@@ -1100,11 +1101,9 @@ if __name__ == "__main__":
                            binance_api_key='dummy',
                            binance_api_secret='dummy',
                            )
-    print(start_datetime, end_datetime)
-    end_datetime = datetime.datetime.now(timezone.utc) - datetime.timedelta(minutes=1)
-    # end_datetime = datetime.datetime.now(timezone.utc)
+    print(f'Start datetime - end datetime: {start_datetime} - {end_datetime}\n')
     print("\nResampling of same period and compare results with 'cached=False' option\n")
-    print(start_datetime, end_datetime)
+    print(f'Start datetime - end datetime: {start_datetime} - {end_datetime}')
     _data_df_3 = fetcher2.resample_to_timeframe(table_name="spot_data_btcusdt_1m",
                                                 start=start_datetime,
                                                 end=end_datetime,
