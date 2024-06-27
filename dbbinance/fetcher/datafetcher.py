@@ -981,8 +981,11 @@ class DataFetcher(DataUpdaterMeta):
 
                 if cache_key in self.CM.cache.keys():
                     resampled_df = self.CM.cache[cache_key]
-                    logger.debug(
-                        f"{self.__class__.__name__} #{self.idnum}: Return cached RESAMPLED data: {table_name} / {start_timestamp} - {end_timestamp}")
+                    msg = (
+                        f"{self.__class__.__name__} #{self.idnum}: Return cached RESAMPLED data: {table_name} / "
+                        f"{start_timestamp}({DataRepair.convert_timestamp_to_datetime(start_timestamp)}) - "
+                        f"{end_timestamp}({DataRepair.convert_timestamp_to_datetime(end_timestamp)})")
+                    logger.debug(msg)
                 else:
                     resampled_df = prepare_resampled_df()
                     self.CM.update_cache(key=cache_key, value=resampled_df.copy(deep=True))
