@@ -936,15 +936,20 @@ class DataFetcher(DataUpdaterMeta):
                 #   check if data is already in
                 if cache_key in self.CM.cache.keys():
                     raw_df = self.CM.cache[cache_key]
-                    logger.debug(
-                        f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name}/ {start_timestamp} - {end_timestamp}")
+                    msg = (
+                        f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
+                        f"{start_timestamp}({DataRepair.convert_timestamp_to_datetime(start_timestamp)}) - "
+                        f"{end_timestamp}({DataRepair.convert_timestamp_to_datetime(end_timestamp)})")
+                    logger.debug(msg)
                 else:
                     for key in self.CM.cache.keys():
                         if (len(key) == 3) and (key[2][1] == table_name) and (start_timestamp >= key[1][1]) and (
                                 end_timestamp <= key[0][1]):
                             raw_df = self.CM.cache[key].loc[start_timestamp:end_timestamp]
-                            logger.debug(
-                                f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / {raw_df.index[0]} - {raw_df.index[-1]}")
+                            msg = (f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
+                                   f"{raw_df.index[0]}({DataRepair.convert_timestamp_to_datetime(raw_df.index[0])}) - "
+                                   f"{raw_df.index[-1]}({DataRepair.convert_timestamp_to_datetime(raw_df.index[-1])}")
+                            logger.debug(msg)
                             break
                     if raw_df is None:
                         raw_df = prepare_raw_df()
