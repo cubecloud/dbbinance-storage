@@ -1,7 +1,7 @@
 import sys
 from typing import Union
 from collections import OrderedDict
-from mlthread_tools.multithreaded_mutex import mlt_mutex
+from mlthread_tools import mlt_mutex
 import logging
 
 __version__ = 0.011
