@@ -715,15 +715,17 @@ class DataUpdater(DataUpdaterMeta):
 
     @staticmethod
     def convert_timeframe_to_min(timeframe):
-        if timeframe[-1:] == 'h' or timeframe[-1:] == 'H':
-            min_size = 60
-        elif timeframe[-1:] == 'm':
-            min_size = 1
-        elif timeframe[-1:] == 'd' or timeframe[-1:] == 'D':
-            min_size = 24 * 60
-        elif timeframe[-1:] == 'w' or timeframe[-1:] == 'w':
-            min_size = 7 * 24 * 60
-        converted_data = min_size * int(timeframe[:-1])
+        bin_size = Constants.binsizes[f'1{timeframe.lower()}']
+        # if timeframe[-1:] == 'h' or timeframe[-1:] == 'H':
+        #     min_size = 60
+        # elif timeframe[-1:] == 'm':
+        #     min_size = 1
+        # elif timeframe[-1:] == 'd' or timeframe[-1:] == 'D':
+        #     min_size = 24 * 60
+        # elif timeframe[-1:] == 'w' or timeframe[-1:] == 'W':
+        #     min_size = 7 * 24 * 60
+        # converted_data = min_size * int(timeframe[:-1])
+        converted_data = bin_size * int(timeframe[:-1])
         return converted_data
 
     def update_spot_data(self):
