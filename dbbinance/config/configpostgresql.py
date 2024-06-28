@@ -1,4 +1,4 @@
-from secureapikey.secureaes import Secure
+from secureapikey import Secure
 
 __version__ = 0.006
 
