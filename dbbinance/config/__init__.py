@@ -1,0 +1,2 @@
+from dbbinance.config.configpostgresql import ConfigPostgreSQL
+from dbbinance.config.configbinance import ConfigBinance

@@ -2,9 +2,9 @@ import logging
 import datetime
 from datetime import timezone
 
-from dbbinance.fetcher.constants import Constants
-from dbbinance.fetcher.datafetcher import DataFetcher
-from dbbinance.fetcher.datafetcher import ceil_time, floor_time
+from dbbinance.fetcher import Constants
+from dbbinance.fetcher import DataFetcher
+from dbbinance.fetcher import ceil_time, floor_time
 
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 

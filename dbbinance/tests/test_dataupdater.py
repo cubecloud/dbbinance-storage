@@ -3,9 +3,9 @@ import datetime
 import pandas as pd
 from datetime import timezone
 
-from dbbinance.fetcher.constants import Constants
-from dbbinance.fetcher.datafetcher import DataRepair
-from dbbinance.fetcher.datafetcher import DataUpdater
+from dbbinance.fetcher import Constants
+from dbbinance.fetcher import DataRepair
+from dbbinance.fetcher import DataUpdater
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
