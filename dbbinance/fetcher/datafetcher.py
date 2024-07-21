@@ -715,7 +715,7 @@ class DataUpdater(DataUpdaterMeta):
 
     @staticmethod
     def convert_timeframe_to_min(timeframe):
-        bin_size = Constants.binsizes[f'1{timeframe.lower()}']
+        bin_size = Constants.binsizes[f'1{timeframe.lower()[-1:]}']
         # if timeframe[-1:] == 'h' or timeframe[-1:] == 'H':
         #     min_size = 60
         # elif timeframe[-1:] == 'm':
