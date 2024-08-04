@@ -96,6 +96,7 @@ def get_nearest_timeframe(bins: int) -> str:
             previous_timeframe_name = f'{timeframe_name}'
     return result
 
+
 def get_timedelta_kwargs(_period: int or str, current_timeframe: str = "1h") -> dict:
     """
 
