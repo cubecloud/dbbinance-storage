@@ -73,6 +73,29 @@ def get_timeframe_bins(current_timeframe: str = '1h'):
     return timeframe_binsize
 
 
+def get_nearest_timeframe(bins: int) -> str:
+    previous_timeframe_name = '1m'
+    result = previous_timeframe_name
+    for timeframe_name, timeframe_bins in Constants.binsizes.items():
+        if timeframe_bins == bins:
+            result = timeframe_name
+            break
+        elif timeframe_bins > bins:
+            _temp = get_timeframe_bins(previous_timeframe_name)
+            previous_period = int(previous_timeframe_name[:-1])
+            if previous_period > 1:
+                _temp = Constants.binsizes.get(f'1{previous_timeframe_name[-1]}')
+            for period in range(previous_period, 500):
+                if period * _temp > bins:
+                    break
+                else:
+                    previous_period = period
+            result = f'{previous_period + 1}{previous_timeframe_name[-1]}'
+            break
+        else:
+            previous_timeframe_name = f'{timeframe_name}'
+    return result
+
 def get_timedelta_kwargs(_period: int or str, current_timeframe: str = "1h") -> dict:
     """
 

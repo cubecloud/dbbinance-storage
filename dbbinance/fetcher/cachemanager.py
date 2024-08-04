@@ -46,6 +46,7 @@ class CacheManager:
             item = self.__cache.popitem(last=last)
             self.current_memory_usage = sum(sys.getsizeof(v) for v in self.__cache.values())
         return item
+
     @staticmethod
     def get_cache_key(**cache_kwargs):
         return tuple(sorted(cache_kwargs.items()))
