@@ -29,7 +29,7 @@ class CacheManager:
         if mutex == 'mlt':
             self.lock = mlt_mutex
         elif mutex == 'mp':
-            self.lock = RLock
+            self.lock = RLock()
         else:
             sys.exit(f'Error: Unknown option {mutex}')
 
