@@ -2,7 +2,8 @@ import sys
 from typing import Union
 from collections import OrderedDict
 from mlthread_tools import mlt_mutex
-from multiprocessing import RLock as mlp_mutex
+from multiprocessing import RLock
+
 import logging
 
 __version__ = 0.015
@@ -28,7 +29,7 @@ class CacheManager:
         if mutex == 'mlt':
             self.lock = mlt_mutex
         elif mutex == 'mp':
-            self.lock = mlp_mutex
+            self.lock = RLock
         else:
             sys.exit(f'Error: Unknown option {mutex}')
 
