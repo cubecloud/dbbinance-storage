@@ -26,6 +26,7 @@ class CacheManager:
         self.__cache = OrderedDict()
         self.max_memory_bytes = int(max_memory_gb * 1024 * 1024 * 1024)  # Convert max_memory_gb to bytes
         self.current_memory_usage = 0
+        self.mutex_type = mutex
         if mutex == 'mlt':
             self.lock = mlt_mutex
         elif mutex == 'mlp':
