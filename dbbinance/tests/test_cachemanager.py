@@ -25,4 +25,4 @@ if __name__ == "__main__":
     print(cd_test.hits)
     print(cd_test.get(12))
     print(cd_test.hits)
-    print(cd_test.keys_probs())
+    print(cd_test.hits_probs())

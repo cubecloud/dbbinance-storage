@@ -63,9 +63,10 @@ class CacheDict(OrderedDict):
             self.hits[key] += 1
         return super(CacheDict, self).values()
 
-    def keys_probs(self) -> dict:
+    def hits_probs(self) -> dict:
         total = sum(self.hits.values())
-        return {k: v / total for k, v in self.hits.items()}
+        _p = {k: v / total for k, v in self.hits.items()}
+        return dict(sorted(_p.items(), key=lambda x: x[1], reverse=False))
 
 
 class CacheManager:
