@@ -19,6 +19,7 @@ dependencies:
   - websockets==9.1
   - psycopg2>=2.9.3
   - apscheduler
+  - objsize
   - pip:
       - git+https://github.com/cubecloud/secureapikey.git
       - git+https://github.com/cubecloud/mlthread-tools.git

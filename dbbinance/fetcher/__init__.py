@@ -1,4 +1,5 @@
 from dbbinance.fetcher.cachemanager import CacheManager
+from dbbinance.fetcher.mpcachemanager import MpCacheManager
 from dbbinance.fetcher.constants import Constants
 from dbbinance.fetcher.datafetcher import DataFetcher
 from dbbinance.fetcher.datafetcher import ceil_time
