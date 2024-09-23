@@ -49,7 +49,7 @@ if __name__ == '__main__':
     cache_obj.update_cache(0, 100)
     cache_obj.update({500: 500})
     print(cache_obj.items())
-    # print(cache_obj.hits_probs())
+    print(cache_obj.hits_probs())
     # print(cache_obj.__sizeof__())
     # print(sys.getsizeof(cache_obj.cache[7]))
     # print(objsize.get_deep_size(cache_obj))

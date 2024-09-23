@@ -97,6 +97,10 @@ class CacheManager:
     def cache(self):
         return self.__cache
 
+    @property
+    def hits(self):
+        return self.__hits
+
     def update_cache(self, key, value):
         with self.lock:
             value_size = sys.getsizeof(value)

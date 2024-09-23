@@ -1,12 +1,10 @@
-import sys
 import objsize
 from typing import Union
-from collections import OrderedDict
 from mlthread_tools import mlp_mutex
 from multiprocessing.managers import SyncManager
 import logging
 
-__version__ = 0.025
+__version__ = 0.026
 
 logger = logging.getLogger()
 
@@ -53,6 +51,10 @@ class MpCacheManager:
     @property
     def cache(self):
         return self.__cache
+
+    @property
+    def hits(self):
+        return self.__hits
 
     def update(self, key_value_dict: dict):
         self.update_cache(list(key_value_dict.keys())[0], list(key_value_dict.values())[0])
