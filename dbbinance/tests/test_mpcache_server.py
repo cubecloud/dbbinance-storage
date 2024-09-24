@@ -7,6 +7,3 @@ if __name__ == "__main__":
     input('Waiting for any key, to server "shutdown"')
     man_obj.shutdown()
 
-
-
-

@@ -69,7 +69,7 @@ class MpCacheManager:
                 # Delete the oldest item to free up memory
                 self.popitem(last=False)
             self.__cache.update({key: value})
-            self.__hits.update({key: 0})
+            self.__hits.update({key: 1})
             self.current_memory_usage = self.cache_size()
 
     def popitem(self, last=False):
@@ -94,10 +94,9 @@ class MpCacheManager:
     def get(self, key, default=None):
         value = self.__cache.get(key, None)
         if value is not None:
-            if key not in self.__hits:
-                with self.lock:
-                    self.__hits[key] = 0
             with self.lock:
+                if key not in self.__hits:
+                    self.__hits[key] = 0
                 self.__hits[key] += 1
         else:
             value = default

@@ -27,7 +27,8 @@ def a(_obj: MpCacheManager, idnum: int):
 
 
 if __name__ == '__main__':
-    cache_obj = MpCacheManager(start_host=False, host="127.0.0.1", port=5003, authkey=b"password")
+    # cache_obj = MpCacheManager(start_host=False, host="127.0.0.1", port=5003, authkey=b"password")
+    cache_obj = MpCacheManager(start_host=False)
 
     for i in range(10):
         cache_obj.update({i: i})

@@ -111,7 +111,7 @@ class CacheManager:
                 # Delete the oldest item to free up memory
                 self.__cache.popitem(last=False)
             self.__cache.update({key: value})
-            self.__hits.update({key: 0})
+            self.__hits.update({key: 1})
             self.current_memory_usage = self.cache_size()
 
     def update(self, key_value_dict: dict):
@@ -139,10 +139,9 @@ class CacheManager:
     def get(self, key, default=None):
         value = self.__cache.get(key, None)
         if value is not None:
-            if key not in self.__hits:
-                with self.lock:
-                    self.__hits[key] = 0
             with self.lock:
+                if key not in self.__hits:
+                    self.__hits[key] = 0
                 self.__hits[key] += 1
         else:
             value = default
