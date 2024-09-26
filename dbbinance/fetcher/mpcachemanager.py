@@ -1,12 +1,17 @@
 import objsize
 from typing import Union
 from mlthread_tools import mlp_mutex
-from multiprocessing.managers import SyncManager
+from multiprocessing.managers import SyncManager, DictProxy
+
 import logging
 
-__version__ = 0.026
+__version__ = 0.027
 
 logger = logging.getLogger()
+
+
+class CacheSync(SyncManager):
+    pass
 
 
 class MpCacheManager:
@@ -27,34 +32,36 @@ class MpCacheManager:
             authkey (bytes):                Authorization password (bytes)
         """
         self.start_host = start_host
-        self.lock = mlp_mutex
+
         self.host = host
         self.port = port
         self.authkey = authkey
         self.manager = None
-        self.__cache = None
-        self.__hits = None
+        self.__cache = {}
+        self.__hits = {}
         self.max_memory_bytes = int(max_memory_gb * 1024 * 1024 * 1024)  # Convert max_memory_gb to bytes
         self.host_instance = False
         if self.start_host:
-            self.manager = SyncManager((self.host, self.port), authkey=self.authkey)
+            self.manager = CacheSync((self.host, self.port), authkey=self.authkey)
+            self.manager.register('get_cache', callable=lambda: self.__cache)
+            self.manager.register('get_hits', callable=lambda: self.__hits)
             self.manager.start()
             self.host_instance = True
         else:
-            self.manager = SyncManager((self.host, self.port), authkey=authkey)
+            self.manager = CacheSync((self.host, self.port), authkey=authkey)
+            self.manager.register('get_cache')
+            self.manager.register('get_hits')
             self.manager.connect()
-
-        self.__cache = self.manager.dict()
-        self.__hits = self.manager.dict()
+        self.lock = self.manager.RLock()
         self.current_memory_usage = 0
 
     @property
     def cache(self):
-        return self.__cache
+        return self.manager.get_cache()
 
     @property
     def hits(self):
-        return self.__hits
+        return self.manager.get_hits()
 
     def update(self, key_value_dict: dict):
         self.update_cache(list(key_value_dict.keys())[0], list(key_value_dict.values())[0])
@@ -68,8 +75,8 @@ class MpCacheManager:
             while (self.current_memory_usage + value_size > self.max_memory_bytes) and len(self.__cache) > 0:
                 # Delete the oldest item to free up memory
                 self.popitem(last=False)
-            self.__cache.update({key: value})
-            self.__hits.update({key: 1})
+            self.cache.update({key: value})
+            self.hits.update({key: 1})
             self.current_memory_usage = self.cache_size()
 
     def popitem(self, last=False):
@@ -78,47 +85,54 @@ class MpCacheManager:
                 idx = -1
             else:
                 idx = 0
-            key = self.__cache.keys()[idx]
-            del self.__hits[key]
-            item = self.__cache.pop(key)
+            key = self.cache.keys()[idx]
+            del self.hits[key]
+            item = self.cache.pop(key)
             self.current_memory_usage = self.cache_size()
         return item
 
     def pop(self, key):
         with self.lock:
-            del self.__hits[key]
-            item = self.__cache.pop(key)
+            _ = self.hits.pop(key)
+            item = self.cache.pop(key)
             self.current_memory_usage = self.cache_size()
         return item
 
     def get(self, key, default=None):
-        value = self.__cache.get(key, None)
+        value = self.cache.get(key, None)
         if value is not None:
             with self.lock:
-                if key not in self.__hits:
-                    self.__hits[key] = 0
-                self.__hits[key] += 1
+                self.hits.update({key: self.hits.get(key, 0) + 1})
         else:
             value = default
         return value
 
+    def clear(self):
+        with self.lock:
+            self.cache.clear()
+            self.hits.clear()
+
+    def keys(self):
+        with self.lock:
+            return self.cache.keys()
+
     def items(self):
         with self.lock:
-            _odict = self.__cache.items()
+            _odict = self.cache.items()
             for key, _ in _odict:
-                self.__hits[key] += 1
+                self.hits.update({key: self.hits.get(key, 0) + 1})
         return _odict
 
     def values(self):
         with self.lock:
-            for key in self.__cache.keys():
-                self.__hits[key] += 1
-        return self.__cache.values()
+            for key in self.cache.keys():
+                self.hits.update({key: self.hits.get(key) + 1})
+        return self.cache.values()
 
     def hits_probs(self) -> dict:
         with self.lock:
-            total = sum(self.__hits.values())
-            _p = {k: v / total for k, v in self.__hits.items()}
+            total = sum(self.hits.values())
+            _p = {k: v / total for k, v in self.hits.items()}
         return dict(sorted(_p.items(), key=lambda x: x[1], reverse=False))
 
     @staticmethod
@@ -127,12 +141,12 @@ class MpCacheManager:
 
     def cache_size(self):
         with self.lock:
-            size = objsize.get_deep_size(self.__cache)  # instance dictionary
-            for k, v in self.__cache.items():
+            size = objsize.get_deep_size(self.cache)  # instance dictionary
+            for k, v in self.cache.items():
                 size += objsize.get_deep_size(k)
                 size += objsize.get_deep_size(v)
-            size += objsize.get_deep_size(self.__hits)  # instance dictionary
-            for k, v in self.__hits.items():
+            size += objsize.get_deep_size(self.hits)  # instance dictionary
+            for k, v in self.hits.items():
                 size += objsize.get_deep_size(k)
                 size += objsize.get_deep_size(v)
         return size
@@ -143,3 +157,4 @@ class MpCacheManager:
 
     def shutdown(self):
         self.manager.shutdown()
+

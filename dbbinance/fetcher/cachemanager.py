@@ -147,6 +147,16 @@ class CacheManager:
             value = default
         return value
 
+    def clear(self):
+        with self.lock:
+            self.__cache.clear()
+            self.__hits.clear()
+
+    def keys(self):
+        with self.lock:
+            return self.cache.keys()
+
+
     def items(self):
         with self.lock:
             _odict = self.__cache.items()
