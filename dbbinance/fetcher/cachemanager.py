@@ -176,6 +176,9 @@ class CacheManager:
             _p = {k: v / total for k, v in self.__hits.items()}
         return dict(sorted(_p.items(), key=lambda x: x[1], reverse=False))
 
+    def __len__(self):
+        self.cache.__len__()
+
     def cache_size(self):
         with self.lock:
             size = objsize.get_deep_size(self.__cache)  # instance dictionary

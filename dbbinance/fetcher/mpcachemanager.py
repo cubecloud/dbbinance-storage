@@ -1,7 +1,7 @@
 import objsize
 from typing import Union
 from mlthread_tools import mlp_mutex
-from multiprocessing.managers import SyncManager, DictProxy
+from multiprocessing.managers import SyncManager
 
 import logging
 
@@ -32,7 +32,7 @@ class MpCacheManager:
             authkey (bytes):                Authorization password (bytes)
         """
         self.start_host = start_host
-
+        self.lock = mlp_mutex
         self.host = host
         self.port = port
         self.authkey = authkey
@@ -52,7 +52,7 @@ class MpCacheManager:
             self.manager.register('get_cache')
             self.manager.register('get_hits')
             self.manager.connect()
-        self.lock = self.manager.RLock()
+        self.th_lock = self.manager.RLock()
         self.current_memory_usage = 0
 
     @property
@@ -86,7 +86,7 @@ class MpCacheManager:
             else:
                 idx = 0
             key = self.cache.keys()[idx]
-            del self.hits[key]
+            _ = self.hits.pop(key)
             item = self.cache.pop(key)
             self.current_memory_usage = self.cache_size()
         return item
@@ -134,6 +134,11 @@ class MpCacheManager:
             total = sum(self.hits.values())
             _p = {k: v / total for k, v in self.hits.items()}
         return dict(sorted(_p.items(), key=lambda x: x[1], reverse=False))
+
+    def __len__(self):
+        """Calculating length of hits values (cos of size of list) """
+        with self.lock:
+            return len(self.hits.values())
 
     @staticmethod
     def get_cache_key(**cache_kwargs):
