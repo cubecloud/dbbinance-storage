@@ -140,6 +140,15 @@ class MpCacheManager:
         with self.lock:
             return len(self.hits.values())
 
+    @classmethod
+    def is_server_running(cls, host: str = "127.0.0.1", port: int = 5003, authkey: bytes = b"password"):
+        _manager = CacheSync((host, port), authkey=authkey)
+        try:
+            _manager.connect()
+            return True
+        except ConnectionRefusedError:
+            return False
+
     @staticmethod
     def get_cache_key(**cache_kwargs):
         return tuple(sorted(cache_kwargs.items()))
