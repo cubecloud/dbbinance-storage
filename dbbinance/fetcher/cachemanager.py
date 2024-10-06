@@ -112,7 +112,7 @@ class CacheManager:
                 self.__cache.popitem(last=False)
             self.__cache.update({key: value})
             self.__hits.update({key: 1})
-            self.current_memory_usage += (value + objsize.get_deep_size(key) + objsize.get_deep_size(1))
+            self.current_memory_usage += (value_size + objsize.get_deep_size(key) + objsize.get_deep_size(1))
 
     def update(self, key_value_dict: dict):
         self.update_cache(list(key_value_dict.keys())[0], list(key_value_dict.values())[0])
