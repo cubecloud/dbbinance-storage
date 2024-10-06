@@ -53,7 +53,7 @@ class MpCacheManager:
             self.manager.register('get_hits')
             self.manager.connect()
         self.th_lock = self.manager.RLock()
-        self.current_memory_usage = 0
+        self.current_memory_usage: int = 0
 
     @property
     def cache(self):
@@ -77,7 +77,7 @@ class MpCacheManager:
                 self.popitem(last=False)
             self.cache.update({key: value})
             self.hits.update({key: 1})
-            self.current_memory_usage += (value + objsize.get_deep_size(key) + objsize.get_deep_size(1))
+            self.current_memory_usage += (value_size + objsize.get_deep_size(key) + objsize.get_deep_size(1))
 
     def popitem(self, last=False):
         if last:
@@ -93,7 +93,8 @@ class MpCacheManager:
         with self.lock:
             _ = self.hits.pop(key)
             item = self.cache.pop(key)
-            self.current_memory_usage -= (objsize.get_deep_size(item) + objsize.get_deep_size(key) * 2 + objsize.get_deep_size(1))
+            self.current_memory_usage -= (
+                    objsize.get_deep_size(item) + objsize.get_deep_size(key) * 2 + objsize.get_deep_size(1))
         return item
 
     def get(self, key, default=None):
@@ -151,7 +152,7 @@ class MpCacheManager:
     def get_cache_key(**cache_kwargs):
         return tuple(sorted(cache_kwargs.items()))
 
-    def cache_size(self):
+    def cache_size(self) -> int:
         with self.lock:
             size = objsize.get_deep_size(self.cache)  # instance dictionary
             for k, v in self.cache.items():
@@ -169,4 +170,3 @@ class MpCacheManager:
 
     def shutdown(self):
         self.manager.shutdown()
-
