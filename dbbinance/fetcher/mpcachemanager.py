@@ -71,31 +71,29 @@ class MpCacheManager:
             value_size = objsize.get_deep_size(value) + objsize.get_deep_size(key)
             if value_size > self.max_memory_bytes:
                 logger.warning(f"{self.__class__.__name__}: "
-                               f"Object size is greater then {self.max_memory_bytes} increase CacheManager memory")
+                               f"Object size is greater then {self.max_memory_bytes} increase MpCacheManager memory")
             while (self.current_memory_usage + value_size > self.max_memory_bytes) and len(self.__cache) > 0:
                 # Delete the oldest item to free up memory
                 self.popitem(last=False)
             self.cache.update({key: value})
             self.hits.update({key: 1})
-            self.current_memory_usage = self.cache_size()
+            self.current_memory_usage += (value + objsize.get_deep_size(key) + objsize.get_deep_size(1))
 
     def popitem(self, last=False):
+        if last:
+            idx = -1
+        else:
+            idx = 0
         with self.lock:
-            if last:
-                idx = -1
-            else:
-                idx = 0
             key = self.cache.keys()[idx]
-            _ = self.hits.pop(key)
-            item = self.cache.pop(key)
-            self.current_memory_usage = self.cache_size()
+            item = self.pop(key)
         return item
 
     def pop(self, key):
         with self.lock:
             _ = self.hits.pop(key)
             item = self.cache.pop(key)
-            self.current_memory_usage = self.cache_size()
+            self.current_memory_usage -= (objsize.get_deep_size(item) + objsize.get_deep_size(key) * 2 + objsize.get_deep_size(1))
         return item
 
     def get(self, key, default=None):

@@ -103,7 +103,7 @@ class CacheManager:
 
     def update_cache(self, key, value):
         with self.lock:
-            value_size = sys.getsizeof(value)
+            value_size = objsize.get_deep_size(value) + objsize.get_deep_size(key)
             if value_size > self.max_memory_bytes:
                 logger.warning(f"{self.__class__.__name__}: "
                                f"Object size is greater then {self.max_memory_bytes} increase CacheManager memory")
@@ -112,7 +112,7 @@ class CacheManager:
                 self.__cache.popitem(last=False)
             self.__cache.update({key: value})
             self.__hits.update({key: 1})
-            self.current_memory_usage = self.cache_size()
+            self.current_memory_usage += (value + objsize.get_deep_size(key) + objsize.get_deep_size(1))
 
     def update(self, key_value_dict: dict):
         self.update_cache(list(key_value_dict.keys())[0], list(key_value_dict.values())[0])
