@@ -107,7 +107,7 @@ class CacheManager:
             if value_size > self.max_memory_bytes:
                 logger.warning(f"{self.__class__.__name__}: "
                                f"Object size is greater then {self.max_memory_bytes} increase CacheManager memory")
-            while (self.current_memory_usage + value_size > self.max_memory_bytes) and len(self.__cache) > 0:
+            while (self.current_memory_usage + value_size > self.max_memory_bytes) and (self.__len__() > 0):
                 # Delete the oldest item to free up memory
                 self.__cache.popitem(last=False)
             self.__cache.update({key: value})
@@ -156,7 +156,6 @@ class CacheManager:
         with self.lock:
             return self.cache.keys()
 
-
     def items(self):
         with self.lock:
             _odict = self.__cache.items()
@@ -177,7 +176,8 @@ class CacheManager:
         return dict(sorted(_p.items(), key=lambda x: x[1], reverse=False))
 
     def __len__(self):
-        self.cache.__len__()
+        with self.lock:
+            return self.cache.__len__()
 
     def cache_size(self):
         with self.lock:

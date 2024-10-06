@@ -72,7 +72,7 @@ class MpCacheManager:
             if value_size > self.max_memory_bytes:
                 logger.warning(f"{self.__class__.__name__}: "
                                f"Object size is greater then {self.max_memory_bytes} increase MpCacheManager memory")
-            while (self.current_memory_usage + value_size > self.max_memory_bytes) and len(self.__cache) > 0:
+            while (self.current_memory_usage + value_size > self.max_memory_bytes) and (self.__len__() > 0):
                 # Delete the oldest item to free up memory
                 self.popitem(last=False)
             self.cache.update({key: value})

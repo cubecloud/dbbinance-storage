@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from dbbinance.fetcher.cachemanager import CacheDict
+from dbbinance.fetcher.cachemanager import CacheManager, CacheDict
 
 
 if __name__ == "__main__":
@@ -26,3 +26,10 @@ if __name__ == "__main__":
     print(cd_test.get(12))
     print(cd_test.hits)
     print(cd_test.hits_probs())
+    cm = CacheManager()
+    for i in range(10):
+        cm.update({i: i})
+        cm.update_cache(i*2, i*2)
+    print(len(cm))
+    print(cm.items())
+
