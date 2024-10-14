@@ -57,14 +57,11 @@ class MpCacheManager:
             self.manager.start()
             self.host_instance = True
         else:
-            self.refresh_conn()
+            self.manager = CacheSync((self.host, self.port), authkey=self.authkey)
+            self.manager.register('get_cache')
+            self.manager.register('get_hits')
+            self.manager.connect()
         self.current_memory_usage: int = 0
-
-    def refresh_conn(self):
-        self.manager = CacheSync((self.host, self.port), authkey=self.authkey)
-        self.manager.register('get_cache')
-        self.manager.register('get_hits')
-        self.manager.connect()
 
     @property
     def cache(self):
@@ -179,7 +176,6 @@ class MpCacheManager:
         self.current_memory_usage = self.cache_size()
 
     def cache_size(self) -> int:
-        self.refresh_conn()
         with self.lock:
             size = objsize.get_deep_size(self.cache)  # instance dictionary
             for k, v in self.cache.items():
