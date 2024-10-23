@@ -6,7 +6,7 @@ import datetime
 from mlthread_tools.multiprocessing_mutex import mlp_mutex
 from multiprocessing import Process, Manager, Value
 import pandas as pd
-
+from threading import RLock
 from dbbinance.fetcher import MpCacheManager
 
 
@@ -31,7 +31,8 @@ def a(_obj: MpCacheManager, idnum: int):
 
 if __name__ == '__main__':
     # cache_obj = MpCacheManager(start_host=False, host="127.0.0.1", port=5003, authkey=b"password")
-    cache_obj = MpCacheManager(start_host=False)
+    lock = RLock()
+    cache_obj = MpCacheManager(port=5500, start_host=False, unique_name='test',  th_rlock=lock)
     cache_obj.clear()
     time.sleep(7)
     print(cache_obj.values())

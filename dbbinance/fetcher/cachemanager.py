@@ -2,11 +2,10 @@ import sys
 from typing import Union
 from collections import OrderedDict
 from mlthread_tools import mlt_mutex
-from mlthread_tools import mlp_mutex
 import objsize
 import logging
 
-__version__ = 0.024
+__version__ = 0.027
 
 logger = logging.getLogger()
 
@@ -72,22 +71,19 @@ class CacheDict(OrderedDict):
 class CacheManager:
     def __init__(self,
                  max_memory_gb: Union[float, int] = 3,
-                 mutex: str = 'mlt'):
+                 mlt_rlock=None):
         """
         Initialize the Cache class with an optional maximum memory limit in gigabytes.
+        CacheManager using mlt_mutex from mlthread_tools package
 
         Args:
             max_memory_gb (float or int):   The maximum memory limit in gigabytes
-            mutex (str):                    'mlt' or 'mlp' multithreading or multiprocessing lock usage
         """
-
-        if mutex == 'mlt':
+        if mlt_rlock is None:
             self.lock = mlt_mutex
-        elif mutex == 'mlp':
-            self.lock = mlp_mutex
         else:
-            sys.exit(f'Error: Unknown option {mutex}')
-        self.mutex_type = mutex
+            self.lock = mlt_rlock
+
         self.__cache = CacheDict()
         self.__hits: dict = {}
         self.max_memory_bytes = int(max_memory_gb * 1024 * 1024 * 1024)  # Convert max_memory_gb to bytes
@@ -100,6 +96,10 @@ class CacheManager:
     @property
     def hits(self):
         return self.__hits
+    
+    def update(self, key_value_dict: dict):
+        for key, value in key_value_dict.items():
+            self.update_cache(key, value)
 
     def update_cache(self, key, value):
         with self.lock:
@@ -114,16 +114,13 @@ class CacheManager:
             self.__hits.update({key: 1})
             self.current_memory_usage += (value_size + objsize.get_deep_size(key) + objsize.get_deep_size(1))
 
-    def update(self, key_value_dict: dict):
-        self.update_cache(list(key_value_dict.keys())[0], list(key_value_dict.values())[0])
-
     def popitem(self, last=False):
         with self.lock:
             if last:
                 idx = -1
             else:
                 idx = 0
-            key = self.__cache.keys()[idx]
+            key = list(self.__cache.keys())[idx]
             del self.__hits[key]
             item = self.__cache.pop(key)
             self.current_memory_usage = self.cache_size()
@@ -179,6 +176,13 @@ class CacheManager:
         with self.lock:
             return self.cache.__len__()
 
+    @staticmethod
+    def get_cache_key(**cache_kwargs):
+        return tuple(sorted(cache_kwargs.items()))
+
+    def update_cache_size(self) -> None:
+        self.current_memory_usage = self.cache_size()
+
     def cache_size(self):
         with self.lock:
             size = objsize.get_deep_size(self.__cache)  # instance dictionary
@@ -191,6 +195,4 @@ class CacheManager:
                 size += objsize.get_deep_size(v)
         return size
 
-    @staticmethod
-    def get_cache_key(**cache_kwargs):
-        return tuple(sorted(cache_kwargs.items()))
+

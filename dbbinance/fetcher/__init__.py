@@ -10,3 +10,5 @@ from dbbinance.fetcher.datafetcher import DataRepair
 from dbbinance.fetcher.sqlbase import SQLMeta
 from dbbinance.fetcher.sqlbase import handle_errors
 from dbbinance.fetcher.datautils import *
+from dbbinance.fetcher.singleton import Singleton
+from dbbinance.fetcher.slocks import SThLock, SMpLock

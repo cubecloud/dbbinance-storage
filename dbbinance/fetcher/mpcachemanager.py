@@ -1,13 +1,13 @@
-import multiprocessing
+from threading import RLock
 
 import objsize
+from dbbinance.fetcher.slocks import SThLock, SMpLock
+from dbbinance.fetcher.singleton import Singleton
 from typing import Union
-from mlthread_tools import mlp_mutex
 from multiprocessing.managers import SyncManager
-
 import logging
 
-__version__ = 0.029
+__version__ = 0.035
 
 logger = logging.getLogger()
 
@@ -16,14 +16,15 @@ class CacheSync(SyncManager):
     pass
 
 
-class MpCacheManager:
+class MpCacheManager(metaclass=Singleton):
     def __init__(self,
                  max_memory_gb: Union[float, int] = 3,
                  start_host: bool = True,
                  host: str = "127.0.0.1",
                  port: int = 5003,
                  authkey: bytes = b"password",
-                 mlp_rlock: Union[multiprocessing.RLock, None] = None,
+                 th_rlock=None,
+                 unique_name='train'
                  ):
         """
         Initialize the Cache class with an optional maximum memory limit in gigabytes.
@@ -36,32 +37,47 @@ class MpCacheManager:
             authkey (bytes):                Authorization password (bytes)
         """
         self.start_host = start_host
-        if mlp_rlock is None:
-            logger.warning(f"{self.__class__.__name__}: mlp_lock is None, using 'mlp_mutex'")
-            self.lock = mlp_mutex
-        else:
-            self.lock = mlp_rlock
-
         self.host = host
         self.port = port
         self.authkey = authkey
+        self.unique_name = f'{unique_name}'
+
         self.manager = None
         self.__cache = {}
         self.__hits = {}
         self.max_memory_bytes = int(max_memory_gb * 1024 * 1024 * 1024)  # Convert max_memory_gb to bytes
         self.host_instance = False
+        self.manager = CacheSync((self.host, self.port), authkey=self.authkey)
+        self.thrlock_obj = SThLock(th_rlock if th_rlock is not None else RLock(),
+                                   unique_name=f'{self.unique_name}_rlock')
+        self.lock = self.thrlock_obj.lock
         if self.start_host:
-            self.manager = CacheSync((self.host, self.port), authkey=self.authkey)
+            """
+            Start host instance 
+            using Threading lock (SThLock) to avoid race conditions with multiple clients 
+            in one process
+            SyncManager is not thread-safe, but for multiprocessing it is  
+            """
             self.manager.register('get_cache', callable=lambda: self.__cache)
             self.manager.register('get_hits', callable=lambda: self.__hits)
             self.manager.start()
             self.host_instance = True
         else:
-            self.manager = CacheSync((self.host, self.port), authkey=self.authkey)
+            """
+            Connect to host instance
+            using Threading lock (SThLock) to avoid race conditions with multiple clients 
+            in one process
+            SyncManager is not thread-safe, but for multiprocessing it is
+            """
             self.manager.register('get_cache')
             self.manager.register('get_hits')
             self.manager.connect()
+            self.host_instance = False
         self.current_memory_usage: int = 0
+
+    def set_thrlock(self, rlock_obj):
+        self.thrlock_obj = rlock_obj
+        self.lock = self.thrlock_obj.lock
 
     @property
     def cache(self):
@@ -72,7 +88,8 @@ class MpCacheManager:
         return self.manager.get_hits()
 
     def update(self, key_value_dict: dict):
-        self.update_cache(list(key_value_dict.keys())[0], list(key_value_dict.values())[0])
+        for key, value in key_value_dict.items():
+            self.update_cache(key, value)
 
     def update_cache(self, key, value):
         """
@@ -87,6 +104,7 @@ class MpCacheManager:
         Returns:
             None
         """
+
         with self.lock:
             value_size = objsize.get_deep_size(value) + objsize.get_deep_size(key)
             if value_size > self.max_memory_bytes:
@@ -118,12 +136,12 @@ class MpCacheManager:
         return item
 
     def get(self, key, default=None):
-        value = self.cache.get(key, None)
-        if value is not None:
-            with self.lock:
-                self.hits.update({key: self.hits.get(key, 0) + 1})
-        else:
-            value = default
+        with self.lock:
+            value = self.cache.get(key, None)
+            if value is not None:
+                 self.hits.update({key: self.hits.get(key, 0) + 1})
+            else:
+                value = default
         return value
 
     def clear(self):
