@@ -211,8 +211,3 @@ class MpCacheManager(metaclass=Singleton):
     def shutdown(self):
         self.manager.shutdown()
 
-    def __reduce__(self):
-        # Exclude the authkey variable from the pickling process
-        state = self.__dict__.copy()
-        del state['authkey']
-        return (MpCacheManager, (), state)
