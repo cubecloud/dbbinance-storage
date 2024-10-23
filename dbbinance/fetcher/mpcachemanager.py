@@ -39,7 +39,6 @@ class MpCacheManager(metaclass=Singleton):
         self.start_host = start_host
         self.host = host
         self.port = port
-        self.authkey = authkey
         self.unique_name = f'{unique_name}'
 
         self.manager = None
@@ -47,7 +46,7 @@ class MpCacheManager(metaclass=Singleton):
         self.__hits = {}
         self.max_memory_bytes = int(max_memory_gb * 1024 * 1024 * 1024)  # Convert max_memory_gb to bytes
         self.host_instance = False
-        self.manager = CacheSync((self.host, self.port), authkey=self.authkey)
+        self.manager = CacheSync((self.host, self.port), authkey=authkey)
         self.thrlock_obj = SThLock(th_rlock if th_rlock is not None else RLock(),
                                    unique_name=f'{self.unique_name}_rlock')
         self.lock = self.thrlock_obj.lock
@@ -139,7 +138,7 @@ class MpCacheManager(metaclass=Singleton):
         with self.lock:
             value = self.cache.get(key, None)
             if value is not None:
-                 self.hits.update({key: self.hits.get(key, 0) + 1})
+                self.hits.update({key: self.hits.get(key, 0) + 1})
             else:
                 value = default
         return value
@@ -211,3 +210,9 @@ class MpCacheManager(metaclass=Singleton):
 
     def shutdown(self):
         self.manager.shutdown()
+
+    def __reduce__(self):
+        # Exclude the authkey variable from the pickling process
+        state = self.__dict__.copy()
+        del state['authkey']
+        return (MpCacheManager, (), state)
