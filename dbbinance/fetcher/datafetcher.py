@@ -11,7 +11,7 @@ from pandas import Timestamp
 
 from dbbinance.fetcher.constants import Constants
 from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors
-from dbbinance.fetcher.cachemanager import CacheManager
+from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 from dbbinance.fetcher.datautils import convert_timeframe_to_freq
 from collections import OrderedDict
 from dotenv import load_dotenv, find_dotenv
@@ -882,7 +882,7 @@ class DataUpdater(DataUpdaterMeta):
             self.back_scheduler.shutdown()
 
 
-cache_manager_obj = CacheManager(max_memory_gb=2)
+cache_manager_obj = FetcherCacheManager(max_memory_gb=2)
 
 
 class DataFetcher(DataUpdaterMeta):
