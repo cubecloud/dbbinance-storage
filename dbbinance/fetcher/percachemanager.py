@@ -3,7 +3,7 @@ from threading import RLock
 import objsize
 from dbbinance.fetcher.slocks import SThLock, SMpLock
 from dbbinance.fetcher.singleton import Singleton
-from typing import Union, Any, List
+from typing import Union, Any, Dict
 import numpy as np
 import multiprocessing as mp
 from multiprocessing.managers import SyncManager
@@ -133,7 +133,8 @@ class PERCacheManager(metaclass=Singleton):
             self.hits.update({key: 1})
             self.score.update({key: 1.0})
             self._update_total_priority(1.0)
-            self.current_memory_usage += (value_size + objsize.get_deep_size(key) + objsize.get_deep_size(1))
+            self.current_memory_usage += (
+                        value_size + objsize.get_deep_size(key) * 3 + objsize.get_deep_size(1) + objsize.get_deep_size(1.0))
 
     def update_score(self, key, new_score) -> None:
         """ Update score for key """
@@ -165,7 +166,8 @@ class PERCacheManager(metaclass=Singleton):
             _ = self.score.pop(key)
             item = self.cache.pop(key)
             self.current_memory_usage -= (
-                    objsize.get_deep_size(item) + objsize.get_deep_size(key) * 3 + objsize.get_deep_size(1) + objsize.get_deep_size(1.0))
+                    objsize.get_deep_size(item) + objsize.get_deep_size(key) * 3 + objsize.get_deep_size(
+                1) + objsize.get_deep_size(1.0))
 
         return item
 
@@ -201,24 +203,25 @@ class PERCacheManager(metaclass=Singleton):
                 self.hits.update({key: self.hits.get(key) + 1})
             return self.cache.values()
 
-    def hits_probs(self) -> dict:
+    def hits_probs(self) -> Dict:
         with self.lock:
             total = sum(self.hits.values())
             _p = {k: v / total for k, v in self.hits.items()}
             return dict(sorted(_p.items(), key=lambda x: x[1], reverse=False))
 
-    def score_probs(self) -> List:
+    def score_probs(self) -> Dict:
         """
-        Returns list of keys sorted from higher (less scored) to lower (high scored) priority to learn
-        with PER principles
+        Returns a Dict of keys and probabilities sorted
+        from higher (less scored) to lower (high scored)
+        probabilities to learn with PER principles
         """
         with self.lock:
             self._keys = list(self.keys())
             scores = []
             hits = []
             for key in self._keys:
-                scores.append(self.score[key])
-                hits.append(self.hits[key])
+                scores.append(self.score.get(key))
+                hits.append(self.hits.get(key))
 
             scores = np.asarray(scores, dtype=float)
             hits = np.asarray(hits, dtype=float)
@@ -235,9 +238,9 @@ class PERCacheManager(metaclass=Singleton):
 
             sampled_indices = np.argsort(self.probabilities)
 
-            sampled_keys = [self._keys[i] for i in sampled_indices]
+            sorted_data = {self._keys[idx]: self.probabilities[idx] for idx in sampled_indices}
 
-        return sampled_keys
+        return sorted_data
 
     def __len__(self):
         """Calculating length of hits values (cos of size of list) """
