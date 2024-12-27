@@ -1,5 +1,6 @@
 from dbbinance.fetcher.cachemanager import CacheManager
 from dbbinance.fetcher.mpcachemanager import MpCacheManager
+from dbbinance.fetcher.percachemanager import PERCacheManager
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 from dbbinance.fetcher.constants import Constants
 from dbbinance.fetcher.datafetcher import DataFetcher

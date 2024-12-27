@@ -4,10 +4,12 @@ from collections import OrderedDict
 from mlthread_tools import mlt_mutex
 import objsize
 import logging
+import multiprocessing as mp
 
 __version__ = 0.027
 
-logger = logging.getLogger()
+logger = mp.get_logger()
+# logger = logging.getLogger()
 
 
 class CacheDict(OrderedDict):

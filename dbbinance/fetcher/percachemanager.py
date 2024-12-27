@@ -3,11 +3,12 @@ from threading import RLock
 import objsize
 from dbbinance.fetcher.slocks import SThLock, SMpLock
 from dbbinance.fetcher.singleton import Singleton
-from typing import Union
+from typing import Union, Any, List
+import numpy as np
 import multiprocessing as mp
 from multiprocessing.managers import SyncManager
 
-__version__ = 0.037
+__version__ = 0.042
 
 logger = mp.get_logger()
 
@@ -16,7 +17,7 @@ class CacheSync(SyncManager):
     pass
 
 
-class MpCacheManager(metaclass=Singleton):
+class PERCacheManager(metaclass=Singleton):
     def __init__(self,
                  max_memory_gb: Union[float, int] = 3,
                  start_host: bool = True,
@@ -44,6 +45,14 @@ class MpCacheManager(metaclass=Singleton):
         self.manager = None
         self.__cache = {}
         self.__hits = {}
+        self.__score = {}
+
+        self._keys = []
+        self.total_priority = 0.0  # Total sum of priorities
+        self.alpha = 0.9  # weight of priorities
+        self.beta = 0.7  # weight for hits
+        self.probabilities = np.empty((0,))
+
         self.max_memory_bytes = int(max_memory_gb * 1024 * 1024 * 1024)  # Convert max_memory_gb to bytes
         self.host_instance = False
         self.manager = CacheSync((self.host, self.port), authkey=authkey)
@@ -59,6 +68,7 @@ class MpCacheManager(metaclass=Singleton):
             """
             self.manager.register('get_cache', callable=lambda: self.__cache)
             self.manager.register('get_hits', callable=lambda: self.__hits)
+            self.manager.register('get_score', callable=lambda: self.__score)
             self.manager.start()
             self.host_instance = True
         else:
@@ -70,6 +80,7 @@ class MpCacheManager(metaclass=Singleton):
             """
             self.manager.register('get_cache')
             self.manager.register('get_hits')
+            self.manager.register('get_score')
             self.manager.connect()
             self.host_instance = False
         self.current_memory_usage: int = 0
@@ -85,6 +96,10 @@ class MpCacheManager(metaclass=Singleton):
     @property
     def hits(self):
         return self.manager.get_hits()
+
+    @property
+    def score(self):
+        return self.manager.get_score()
 
     def update(self, key_value_dict: dict):
         for key, value in key_value_dict.items():
@@ -107,7 +122,6 @@ class MpCacheManager(metaclass=Singleton):
         with self.lock:
             if key in self.cache.keys():
                 self.pop(key)
-
             value_size = objsize.get_deep_size(value) + objsize.get_deep_size(key)
             if value_size > self.max_memory_bytes:
                 logger.warning(f"{self.__class__.__name__}: "
@@ -117,9 +131,25 @@ class MpCacheManager(metaclass=Singleton):
                 self.popitem(last=False)
             self.cache.update({key: value})
             self.hits.update({key: 1})
+            self.score.update({key: 1.0})
+            self._update_total_priority(1.0)
             self.current_memory_usage += (value_size + objsize.get_deep_size(key) + objsize.get_deep_size(1))
 
-    def popitem(self, last=False):
+    def update_score(self, key, new_score) -> None:
+        """ Update score for key """
+        with self.lock:
+            if key not in self.score.keys():
+                raise KeyError(f"Key {key} not present in cache")
+            delta_score = new_score - self.score.get(key)
+            self.score.update({key: new_score})
+            self._update_total_priority(delta_score)
+
+    def _update_total_priority(self, score) -> None:
+        """ Update total priority """
+        with self.lock:
+            self.total_priority += pow(score, self.alpha)
+
+    def popitem(self, last=False) -> Any:
         if last:
             idx = -1
         else:
@@ -129,15 +159,17 @@ class MpCacheManager(metaclass=Singleton):
             item = self.pop(key)
         return item
 
-    def pop(self, key):
+    def pop(self, key) -> Any:
         with self.lock:
             _ = self.hits.pop(key)
+            _ = self.score.pop(key)
             item = self.cache.pop(key)
             self.current_memory_usage -= (
-                    objsize.get_deep_size(item) + objsize.get_deep_size(key) * 2 + objsize.get_deep_size(1))
+                    objsize.get_deep_size(item) + objsize.get_deep_size(key) * 3 + objsize.get_deep_size(1) + objsize.get_deep_size(1.0))
+
         return item
 
-    def get(self, key, default=None):
+    def get(self, key, default=None) -> Any:
         with self.lock:
             value = self.cache.get(key, None)
             if value is not None:
@@ -146,10 +178,11 @@ class MpCacheManager(metaclass=Singleton):
                 value = default
         return value
 
-    def clear(self):
+    def clear(self) -> None:
         with self.lock:
             self.cache.clear()
             self.hits.clear()
+            self.score.clear()
 
     def keys(self):
         with self.lock:
@@ -173,6 +206,38 @@ class MpCacheManager(metaclass=Singleton):
             total = sum(self.hits.values())
             _p = {k: v / total for k, v in self.hits.items()}
             return dict(sorted(_p.items(), key=lambda x: x[1], reverse=False))
+
+    def score_probs(self) -> List:
+        """
+        Returns list of keys sorted from higher (less scored) to lower (high scored) priority to learn
+        with PER principles
+        """
+        with self.lock:
+            self._keys = list(self.keys())
+            scores = []
+            hits = []
+            for key in self._keys:
+                scores.append(self.score[key])
+                hits.append(self.hits[key])
+
+            scores = np.asarray(scores, dtype=float)
+            hits = np.asarray(hits, dtype=float)
+
+            scores = scores / np.mean(scores)
+            hits = hits / np.mean(hits)
+
+            # calculate priorities
+            priorities = np.power(scores, self.alpha) * np.power(hits, self.beta)
+
+            # Normalize priorities and probabilities
+            total_priority = np.sum(priorities)
+            self.probabilities = priorities / total_priority
+
+            sampled_indices = np.argsort(self.probabilities)
+
+            sampled_keys = [self._keys[i] for i in sampled_indices]
+
+        return sampled_keys
 
     def __len__(self):
         """Calculating length of hits values (cos of size of list) """
@@ -205,6 +270,10 @@ class MpCacheManager(metaclass=Singleton):
             for k, v in self.hits.items():
                 size += objsize.get_deep_size(k)
                 size += objsize.get_deep_size(v)
+            size += objsize.get_deep_size(self.hits)  # instance dictionary
+            for k, v in self.score.items():
+                size += objsize.get_deep_size(k)
+                size += objsize.get_deep_size(v)
         return size
 
     def __del__(self):
@@ -213,4 +282,3 @@ class MpCacheManager(metaclass=Singleton):
 
     def shutdown(self):
         self.manager.shutdown()
-
