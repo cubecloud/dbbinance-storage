@@ -67,7 +67,7 @@ class TestPERCacheManager(unittest.TestCase):
             #     list(self.cache_manager.score_probs().keys())
             #
             # results.append(True)
-            for i in range(50):
+            for i in range(546):
                 key = f'key_{process_id}_{i}'
                 value = generate_random_string(15)
                 self.cache_manager.update({key: value})

@@ -200,12 +200,16 @@ class PERCacheManager(metaclass=Singleton):
         probabilities to learn with PER principles
         """
         with self.lock:
-            self._keys = list(self.keys())
             scores = []
             hits = []
-            for key in self._keys:
-                scores.append(self.score.get(key))
-                hits.append(self.hits.get(key))
+            _keys = []
+            hits_copy = {k: v for k, v in self.hits.items()}
+
+            # synchronize score and hits by keys
+            for key, score in self.score.items():
+                _keys.append(key)
+                scores.append(score)
+                hits.append(hits_copy[key])
 
             scores = np.asarray(scores, dtype=float)
             hits = np.asarray(hits, dtype=float)
@@ -218,11 +222,11 @@ class PERCacheManager(metaclass=Singleton):
 
             # Normalize priorities and probabilities
             total_priority = np.sum(priorities)
-            self.probabilities = priorities / total_priority
+            probabilities = priorities / total_priority
 
-            sampled_indices = np.argsort(self.probabilities)
+            sampled_indices = np.argsort(probabilities)
 
-            sorted_data = {self._keys[idx]: self.probabilities[idx] for idx in sampled_indices}
+            sorted_data = {_keys[idx]: probabilities[idx] for idx in sampled_indices}
 
         return sorted_data
 
