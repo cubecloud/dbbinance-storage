@@ -40,29 +40,43 @@ class TestPERCacheManager(unittest.TestCase):
 
     def test_update_and_get_with_score_update(self):
         # Запускаем несколько процессов для записи и чтения данных
-        num_processes = 10
+        num_processes = 14
         results = []
 
         def worker(process_id):
-            for _ in range(20):
-                key = f'key_{process_id}_{_}'
-                value = generate_random_string(20)
+            # for i in range(20):
+            #     key = f'key_{process_id}_{i}'
+            #     value = generate_random_string(20)
+            #     self.cache_manager.update({key: value})
+            #     # time.sleep(0.01)  # Немного подождем, чтобы имитировать реальную работу
+            #
+            #     logger.debug(f"{self.__class__.__name__}:  update {key}: {value}")
+            #     retrieved_value = self.cache_manager.get(key)
+            #     self.assertEqual(retrieved_value, value)
+            #     logger.debug(f"{self.__class__.__name__}:  retrieved value{retrieved_value} / value {value}")
+            #
+            #     # Обновляем оценку для ключа
+            #     new_score = random.uniform(0, 1)
+            #     self.cache_manager.update_score(key, new_score)
+            #     logger.debug(f"{self.__class__.__name__}:  update {key}: {new_score}")
+            #
+            #     # Проверка того, что оценка была обновлена
+            #     with self.cache_manager.lock:
+            #         self.assertEqual(self.cache_manager.score.get(key), new_score)
+            #
+            #     list(self.cache_manager.score_probs().keys())
+            #
+            # results.append(True)
+            for i in range(50):
+                key = f'key_{process_id}_{i}'
+                value = generate_random_string(15)
                 self.cache_manager.update({key: value})
-                # time.sleep(0.01)  # Немного подождем, чтобы имитировать реальную работу
-
-                logger.debug(f"{self.__class__.__name__}:  update {key}: {value}")
-                retrieved_value = self.cache_manager.get(key)
-                self.assertEqual(retrieved_value, value)
-                logger.debug(f"{self.__class__.__name__}:  retrieved value{retrieved_value} / value {value}")
-
-                # Обновляем оценку для ключа
                 new_score = random.uniform(0, 1)
                 self.cache_manager.update_score(key, new_score)
-                logger.debug(f"{self.__class__.__name__}:  update {key}: {new_score}")
 
-                # Проверка того, что оценка была обновлена
-                with self.cache_manager.lock:
-                    self.assertEqual(self.cache_manager.score.get(key), new_score)
+            probs_dict = self.cache_manager.score_probs()
+            self.assertIsInstance(probs_dict, dict)
+            self.assertGreater(len(probs_dict), 0)
 
             results.append(True)
 

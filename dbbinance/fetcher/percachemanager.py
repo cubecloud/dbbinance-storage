@@ -53,7 +53,7 @@ class PERCacheManager(metaclass=Singleton):
         self.beta = 0.7  # weight for hits
         self.probabilities = np.empty((0,))
 
-        self.max_memory_bytes = int(max_memory_gb * 1024 * 1024 * 1024)  # Convert max_memory_gb to bytes
+        # self.max_memory_bytes = int(max_memory_gb * 1024 * 1024 * 1024)  # Convert max_memory_gb to bytes
         self.host_instance = False
         self.manager = CacheSync((self.host, self.port), authkey=authkey)
         self.thrlock_obj = SThLock(th_rlock if th_rlock is not None else RLock(),
@@ -118,23 +118,11 @@ class PERCacheManager(metaclass=Singleton):
         Returns:
             None
         """
-
         with self.lock:
-            if key in self.cache.keys():
-                self.pop(key)
-            value_size = objsize.get_deep_size(value) + objsize.get_deep_size(key)
-            if value_size > self.max_memory_bytes:
-                logger.warning(f"{self.__class__.__name__}: "
-                               f"Object size is greater then {self.max_memory_bytes} increase MpCacheManager memory")
-            while (self.current_memory_usage + value_size > self.max_memory_bytes) and (self.__len__() > 0):
-                # Delete the oldest item to free up memory
-                self.popitem(last=False)
             self.cache.update({key: value})
             self.hits.update({key: 1})
             self.score.update({key: 1.0})
             self._update_total_priority(1.0)
-            self.current_memory_usage += (
-                        value_size + objsize.get_deep_size(key) * 3 + objsize.get_deep_size(1) + objsize.get_deep_size(1.0))
 
     def update_score(self, key, new_score) -> None:
         """ Update score for key """
@@ -165,10 +153,6 @@ class PERCacheManager(metaclass=Singleton):
             _ = self.hits.pop(key)
             _ = self.score.pop(key)
             item = self.cache.pop(key)
-            self.current_memory_usage -= (
-                    objsize.get_deep_size(item) + objsize.get_deep_size(key) * 3 + objsize.get_deep_size(
-                1) + objsize.get_deep_size(1.0))
-
         return item
 
     def get(self, key, default=None) -> Any:
