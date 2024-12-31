@@ -105,7 +105,7 @@ class PERCacheManager(metaclass=Singleton):
         for key, value in key_value_dict.items():
             self.update_cache(key, value)
 
-    def update_cache(self, key, value):
+    def update_cache(self, key, value, score=1e-8):
         """
         The cache size on host (server) must be updated by self.update_cache_size(),
         to keep cache_size in limits, cos of very slow obj.get_deep_size() recursion,
@@ -114,6 +114,7 @@ class PERCacheManager(metaclass=Singleton):
         Args:
             key:
             value:
+            score:
 
         Returns:
             None
@@ -121,7 +122,7 @@ class PERCacheManager(metaclass=Singleton):
         with self.lock:
             self.cache.update({key: value})
             self.hits.update({key: 1})
-            self.score.update({key: 0.0})
+            self.score.update({key: score})
             self._update_total_priority(1.0)
 
     def update_score(self, key, new_score) -> None:
