@@ -121,7 +121,7 @@ class PERCacheManager(metaclass=Singleton):
         with self.lock:
             self.cache.update({key: value})
             self.hits.update({key: 1})
-            self.score.update({key: 1.0})
+            self.score.update({key: 0.0})
             self._update_total_priority(1.0)
 
     def update_score(self, key, new_score) -> None:
