@@ -105,7 +105,7 @@ class PERCacheManager(metaclass=Singleton):
         for key, value in key_value_dict.items():
             self.update_cache(key, value)
 
-    def update_cache(self, key, value, score=1e-8):
+    def update_cache(self, key, value, score=1.0):
         """
         The cache size on host (server) must be updated by self.update_cache_size(),
         to keep cache_size in limits, cos of very slow obj.get_deep_size() recursion,
