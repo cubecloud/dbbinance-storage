@@ -1,4 +1,4 @@
-__version__ = 0.001
+__version__ = 0.002
 
 
 class SingletonMpLock(type):
@@ -26,20 +26,20 @@ class SingletonThLock(type):
 
 
 class SMpLock(metaclass=SingletonMpLock):
-    def __init__(self, lock=True, unique_name='train_rlock') -> None:
+    def __init__(self, lock: callable, unique_name='train_rlock') -> None:
         self.unique_name = unique_name
         self.lock = lock
 
 
 class SThLock(metaclass=SingletonThLock):
-    def __init__(self, lock=True, unique_name='train_rlock') -> None:
+    def __init__(self, lock: callable, unique_name='train_rlock') -> None:
         self.unique_name = unique_name
         self.lock = lock
 
 
 if __name__ == "__main__":
+    print('Check test')
     import multiprocessing
-
     obj1 = SMpLock(lock=multiprocessing.Lock(), unique_name='one')
     obj2 = SMpLock(lock=multiprocessing.Lock(), unique_name='two')
     obj3 = SMpLock(lock=multiprocessing.Lock(), unique_name='three')
