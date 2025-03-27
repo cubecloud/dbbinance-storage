@@ -44,6 +44,7 @@ class MpCacheManager(metaclass=Singleton):
         self.manager = None
         self.__cache = {}
         self.__hits = {}
+
         self.max_memory_bytes = int(max_memory_gb * 1024 * 1024 * 1024)  # Convert max_memory_gb to bytes
         self.host_instance = False
         self.manager = CacheSync((self.host, self.port), authkey=authkey)
@@ -72,6 +73,7 @@ class MpCacheManager(metaclass=Singleton):
             self.manager.register('get_hits')
             self.manager.connect()
             self.host_instance = False
+            self.__local_cache = {}
         self.current_memory_usage: int = 0
 
     def set_thrlock(self, rlock_obj):
@@ -87,8 +89,21 @@ class MpCacheManager(metaclass=Singleton):
         return self.manager.get_hits()
 
     def update(self, key_value_dict: dict):
-        for key, value in key_value_dict.items():
-            self.update_cache(key, value)
+        if self.host_instance:
+            self._update_host(key_value_dict)
+        else:
+            self._update_local(key_value_dict)
+
+    def _update_host(self, key_value_dict: dict):
+        with self.lock:
+            for key, value in key_value_dict.items():
+                self.update_cache(key, value)
+
+    def _update_local(self, key_value_dict: dict):
+        with self.lock:
+            for key, value in key_value_dict.items():
+                self.__local_cache.update({key: value})
+                self.update_cache(key, value)
 
     def update_cache(self, key, value):
         """
@@ -130,6 +145,25 @@ class MpCacheManager(metaclass=Singleton):
         return item
 
     def pop(self, key):
+        if self.host_instance:
+            item = self._pop_host(key)
+        else:
+            item = self._pop_local(key)
+        return item
+
+    def _pop_local(self, key):
+        with self.lock:
+            _ = self.hits.pop(key)
+            item = self.cache.pop(key)
+            try:
+                _ = self.__local_cache.pop(key)
+            except KeyError:
+                pass
+            self.current_memory_usage -= (
+                    objsize.get_deep_size(item) + objsize.get_deep_size(key) * 2 + objsize.get_deep_size(1))
+        return item
+
+    def _pop_host(self, key):
         with self.lock:
             _ = self.hits.pop(key)
             item = self.cache.pop(key)
@@ -138,9 +172,29 @@ class MpCacheManager(metaclass=Singleton):
         return item
 
     def get(self, key, default=None):
+        if self.host_instance:
+            value = self._get_host(key, default)
+        else:
+            value = self._get_local(key, default)
+        return value
+
+    def _get_host(self, key, default=None):
         with self.lock:
             value = self.cache.get(key, None)
-            if value is not None:
+            if value:
+                self.hits.update({key: self.hits.get(key, 0) + 1})
+            else:
+                value = default
+        return value
+
+    def _get_local(self, key, default=None):
+        with self.lock:
+            value = self.__local_cache.get(key, default)
+            if not value:
+                value = self.cache.get(key, None)
+                if value:
+                    self.__local_cache.update({key: value})
+            if value:
                 self.hits.update({key: self.hits.get(key, 0) + 1})
             else:
                 value = default
@@ -150,6 +204,8 @@ class MpCacheManager(metaclass=Singleton):
         with self.lock:
             self.cache.clear()
             self.hits.clear()
+            if not self.host_instance:
+                self.__local_cache.clear()
 
     def keys(self):
         with self.lock:
@@ -213,4 +269,3 @@ class MpCacheManager(metaclass=Singleton):
 
     def shutdown(self):
         self.manager.shutdown()
-
