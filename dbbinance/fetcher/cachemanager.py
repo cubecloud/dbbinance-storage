@@ -1,15 +1,15 @@
 import sys
+from threading import RLock
 from typing import Union
 from collections import OrderedDict
-from mlthread_tools import mlt_mutex
+from dbbinance.fetcher.slocks import SThLock
 import objsize
-import logging
 import multiprocessing as mp
+from dbbinance.fetcher.singleton import Singleton
 
-__version__ = 0.027
+__version__ = 0.030
 
 logger = mp.get_logger()
-# logger = logging.getLogger()
 
 
 class CacheDict(OrderedDict):
@@ -70,21 +70,23 @@ class CacheDict(OrderedDict):
         return dict(sorted(_p.items(), key=lambda x: x[1], reverse=False))
 
 
-class CacheManager:
+class CacheManager(metaclass=Singleton):
     def __init__(self,
                  max_memory_gb: Union[float, int] = 3,
-                 mlt_rlock=None):
+                 mlt_rlock=None,
+                 unique_name: str = 'train'):
         """
         Initialize the Cache class with an optional maximum memory limit in gigabytes.
-        CacheManager using mlt_mutex from mlthread_tools package
+        CacheManager using singleton threads Rlock 'SThLock'
 
         Args:
+            unique_name (str):              unique_name for singleton type of this object
             max_memory_gb (float or int):   The maximum memory limit in gigabytes
         """
-        if mlt_rlock is None:
-            self.lock = mlt_mutex
-        else:
-            self.lock = mlt_rlock
+        self.unique_name = f'{self.__class__.__name__}_{unique_name}'
+        self.thrlock_obj = SThLock(mlt_rlock if mlt_rlock is not None else RLock(),
+                                   unique_name=f'{self.unique_name}_rlock')
+        self.lock = self.thrlock_obj.lock
 
         self.__cache = CacheDict()
         self.__hits: dict = {}
