@@ -7,7 +7,7 @@ from typing import Union
 import multiprocessing as mp
 from multiprocessing.managers import SyncManager
 
-__version__ = 0.037
+__version__ = 0.040
 
 logger = mp.get_logger()
 
@@ -154,11 +154,10 @@ class MpCacheManager(metaclass=Singleton):
     def _pop_local(self, key):
         with self.lock:
             _ = self.hits.pop(key)
-            item = self.cache.pop(key)
             try:
-                _ = self.__local_cache.pop(key)
+                item = self.__local_cache.pop(key)
             except KeyError:
-                pass
+                item = self.cache.pop(key)
             self.current_memory_usage -= (
                     objsize.get_deep_size(item) + objsize.get_deep_size(key) * 2 + objsize.get_deep_size(1))
         return item
@@ -264,6 +263,7 @@ class MpCacheManager(metaclass=Singleton):
         return size
 
     def __del__(self):
+        self.clear()
         if self.host_instance:
             self.manager.shutdown()
 
