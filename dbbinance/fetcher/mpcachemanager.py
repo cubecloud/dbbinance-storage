@@ -74,6 +74,7 @@ class MpCacheManager(metaclass=Singleton):
             self.manager.connect()
             self.host_instance = False
             self.__local_cache = {}
+
         self.current_memory_usage: int = 0
 
     def set_thrlock(self, rlock_obj):

@@ -199,4 +199,7 @@ class CacheManager(metaclass=Singleton):
                 size += objsize.get_deep_size(v)
         return size
 
-
+    @classmethod
+    def is_server_running(cls, unique_name):
+        # Returns True if an instance with the provided name exists, otherwise False.
+        return f'{cls.__name__}_{unique_name}' in cls._instances
