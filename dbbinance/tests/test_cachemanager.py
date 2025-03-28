@@ -26,7 +26,7 @@ if __name__ == "__main__":
     print(cd_test.get(12))
     print(cd_test.hits)
     print(cd_test.hits_probs())
-    cm = CacheManager()
+    cm = CacheManager(unique_name='test')
     for i in range(10):
         cm.update({i: i})
         cm.update_cache(i*2, i*2)

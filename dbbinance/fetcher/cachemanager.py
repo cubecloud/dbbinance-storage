@@ -203,3 +203,14 @@ class CacheManager(metaclass=Singleton):
     def is_server_running(cls, unique_name):
         # Returns True if an instance with the provided name exists, otherwise False.
         return f'{cls.__name__}_{unique_name}' in cls._instances
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['thrlock_obj'] = None
+        state['lock'] = None
+        return state
+
+    def __setstate__(self, state):
+        state['thrlock_obj'] = SThLock(RLock(), unique_name=f'{state["unique_name"]}_rlock')
+        state['lock'] = state['thrlock_obj'].lock
+        self.__dict__.update(state)
