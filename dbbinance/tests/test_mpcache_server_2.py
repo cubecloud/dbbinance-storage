@@ -7,6 +7,7 @@ if __name__ == "__main__":
     if not MpCacheManager.is_server_running(port=5500):
         man_obj = MpCacheManager(port=5500, unique_name='train', th_rlock=lock)
         print("Shared dictionary created:", man_obj.items())
+        print(man_obj.__class__.__name__)
         man_obj.update({800: 800})
         # cache = list(man_obj.items())
         # print(type(man_obj.keys()))

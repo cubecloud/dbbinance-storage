@@ -9,7 +9,7 @@ pytz>=2020.4
 requests>=2.31.0
 websockets==9.1
 psycopg2>=2.9.3
-apscheduler==3.10.4
+apscheduler>=3.10.4,<3.12.0
 setuptools>=74.1.2
 objsize>=0.7.0
 secureapikey>=0.13
