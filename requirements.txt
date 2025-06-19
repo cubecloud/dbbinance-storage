@@ -13,3 +13,6 @@ apscheduler>=3.10.4,<3.12.0
 setuptools>=74.1.2
 objsize>=0.7.0
 secureapikey>=0.13
+dbbinance-storage @ git+https://github.com/cubecloud/dbbinance-storage@main
+secureapikey @ git+https://github.com/cubecloud/secureapikey@main
+mlthread-tools @ git+https://github.com/cubecloud/mlthread-tools@main
