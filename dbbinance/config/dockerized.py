@@ -1,5 +1,7 @@
+import os
 from socket import gethostname, getaddrinfo
 import re
+
 
 def get_host_ip():
     try:
@@ -30,3 +32,11 @@ def validate_ip(ip_address):
     """Проверяет, является ли строка корректным IP-адресом."""
     pattern = r'^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$'
     return bool(re.match(pattern, ip_address))
+
+
+def is_pythonunbuffered():
+    pythonunbuffered = os.getenv("PYTHONUNBUFFERED", "").strip().lower()
+    if pythonunbuffered in ('1', 'true', 'yes'):
+        return True
+    else:
+        return False
