@@ -31,6 +31,7 @@ RUN conda env create -y -f /${env_file} && \
 # Variables for env
 ENV CONDA_DEFAULT_ENV=${conda_env}
 ENV PATH="/opt/conda/envs/${conda_env}/bin:${PATH}"
+ENV PYTHONUNBUFFERED=1
 
 # Start updater
 # CMD ["python", "start.py"]
