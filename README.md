@@ -3,7 +3,7 @@ Binance data tools. Fetch, store to local database and get resampled or raw data
 Postgresql must be installed, and database and users created BEFORE
 
 1. check and correct the config files in 'config' directory
-2. check and correct dbdata_updater.py for 'symbol_pairs'
+2. check and correct dbdata_updater.py or start.py (for docker image) for 'symbol_pairs'
 3. run the dbdata_updater.py - to store data for chosen symbol_pairs from BINANCE to local postgresql database
 4. then prompted for SALT for api, enter your Salt_1 key (22 chars), and your Salt_2 key (10 chars) (write it down for further usage)
 5. enter the BINANCE API KEY and BINANCE API SECRET (check the instruction below)
@@ -18,6 +18,8 @@ Postgresql must be installed, and database and users created BEFORE
 3. Then push the button "Create API" and select "System generated"
 4. In "API restrictions" enable "Enable Spot & Margin Trading"
 5. Copy & Paste here "API Key" and "Secret Key"
+
+
 
 ## Attention
 

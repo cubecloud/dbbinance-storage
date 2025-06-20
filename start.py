@@ -1,18 +1,20 @@
+
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from dbbinance.config import ConfigBinance
 from dbbinance.config import ConfigPostgreSQL
 from dbbinance.fetcher.datafetcher import DataUpdater
+from multiprocessing import get_logger
 
-version = 0.72
+version = 0.80
 
-logger = logging.getLogger()
+logger = get_logger()
 
 logger.setLevel(logging.INFO)
 
 file_handler = TimedRotatingFileHandler('dbdata_updater.log', when='D', interval=3, backupCount=3)
 file_handler.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter('%(asctime)s - %(processName)s - %(name)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
