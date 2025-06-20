@@ -36,16 +36,24 @@ class ConfigPostgreSQL:
     def initialize_host(cls):
         if is_running_in_docker():
             cls.HOST = get_host_ip()  # Fetch host IP if running in Docker
-            logger.info(f"ConfigPostgreSQL: Dockerized instance detected - HOST IP: {cls.HOST}")
+            msg = f"ConfigPostgreSQL: Dockerized instance detected - HOST IP: {cls.HOST}"
+            logger.info(msg)
+            print(msg)
         else:
             # Check for the PSGSQL_HOST_IP environment variable
             potential_host = os.getenv("PSGSQL_HOST_IP", "")
             if potential_host and validate_ip(potential_host):
                 cls.HOST = potential_host
-                logger.info(f"ConfigPostgreSQL: Using specified HOST IP: {cls.HOST}")
+                msg = f"ConfigPostgreSQL: Using specified HOST IP: {cls.HOST}"
+                logger.info(msg)
+                print(msg)
             elif potential_host:
-                logger.warning(f"Invalid HOST IP specified: {potential_host}, falling back to localhost.")
+                msg = f"Invalid HOST IP specified: {potential_host}, falling back to localhost."
+                logger.warning(msg)
+                print(msg)
                 cls.HOST = "localhost"
             else:
                 cls.HOST = "localhost"
-                logger.info(f"ConfigPostgreSQL: Straight run - HOST IP: {cls.HOST}")
+                msg = f"ConfigPostgreSQL: Straight run - HOST IP: {cls.HOST}"
+                logger.info(msg)
+                print(msg)
