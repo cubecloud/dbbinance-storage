@@ -21,9 +21,11 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.70
+__version__ = 0.71
 
 logger = logging.getLogger()
+
+logger.setLevel(logging.INFO)
 
 load_dotenv(find_dotenv())
 
@@ -582,6 +584,7 @@ class DataUpdaterMeta(PostgreSQLDatabase):
 
     def __init__(self, host, database, user, password, binance_api_key, binance_api_secret,
                  symbol_pairs=None, timeframes=None):
+
         super().__init__(host, database, user, password)
         # logger.debug from parent class
 
@@ -653,9 +656,10 @@ class DataUpdater(DataUpdaterMeta):
                  symbol_pairs=None, timeframes=None):
         super().__init__(host, database, user, password, binance_api_key, binance_api_secret, symbol_pairs, timeframes)
 
+
     def check_first_run(self):
         """ Check if this a first run """
-        msg = f"Checking the 1st run"
+        msg = f"{self.__class__.__name__} #{self.idnum}: Checking the 1st run"
         logger.info(msg)
         for base_table_name in self.base_tables_names:
             for symbol_pair in self.symbol_pairs:

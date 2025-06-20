@@ -1,33 +1,51 @@
 import os
+import logging
 from secureapikey import Secure
 from dbbinance.config.dockerized import get_host_ip, is_running_in_docker, validate_ip
-from multiprocessing import get_logger
 
-__version__ = 0.009
+__version__ = 0.011
 
-logger = get_logger()
+logger = logging.getLogger()
+
+logger.setLevel(logging.INFO)
 
 secure_key = Secure()
 _postgresql_user, _postgresql_password = secure_key.get_username_password('PSGSQL', use_env_salt=True)
 
 
-class ConfigPostgreSQL:
-    if is_running_in_docker():  # Проверяем, запущен ли код в Docker
-        HOST = get_host_ip()  # Получаем IP хоста, если работаем в Docker
-        logger.info(f"ConfigPostgreSQL: Dockerized instance detected - HOST IP: {HOST}")
-    else:
-        # Проверяем наличие переменной окружения PSG_HOST_IP
-        potential_host = os.getenv("PSGSQL_HOST_IP", "")
-        if potential_host and validate_ip(potential_host):
-            HOST = potential_host
-            logger.info(f"ConfigPostgreSQL: Using specified HOST IP: {HOST}")
-        elif potential_host:
-            logger.warning(f"Invalid HOST IP specified: {potential_host}, falling back to localhost.")
-            HOST = "localhost"
-        else:
-            HOST = "localhost"
-            logger.info(f"ConfigPostgreSQL: straight run - HOST IP: {HOST}")
+# Decorator to initialize the HOST attribute upon class creation
+def initialize_host_decorator(cls):
+    cls.initialize_host()  # Call the initialization method when decorating the class
+    return cls
 
-    DATABASE = "binance_data"
-    USER = _postgresql_user
-    PASSWORD = _postgresql_password
+
+# Class decorated with the initializer
+@initialize_host_decorator
+class ConfigPostgreSQL:
+    """
+    Configuration class for connecting to PostgreSQL.
+    """
+    DATABASE = "binance_data"  # Database name
+    USER = _postgresql_user  # PostgreSQL username
+    PASSWORD = _postgresql_password  # PostgreSQL password
+    HOST = None  # Initial placeholder value
+    PORT = 5432  # Default PostgreSQL port
+
+    # Class method to initialize the HOST attribute
+    @classmethod
+    def initialize_host(cls):
+        if is_running_in_docker():
+            cls.HOST = get_host_ip()  # Fetch host IP if running in Docker
+            logger.info(f"ConfigPostgreSQL: Dockerized instance detected - HOST IP: {cls.HOST}")
+        else:
+            # Check for the PSGSQL_HOST_IP environment variable
+            potential_host = os.getenv("PSGSQL_HOST_IP", "")
+            if potential_host and validate_ip(potential_host):
+                cls.HOST = potential_host
+                logger.info(f"ConfigPostgreSQL: Using specified HOST IP: {cls.HOST}")
+            elif potential_host:
+                logger.warning(f"Invalid HOST IP specified: {potential_host}, falling back to localhost.")
+                cls.HOST = "localhost"
+            else:
+                cls.HOST = "localhost"
+                logger.info(f"ConfigPostgreSQL: Straight run - HOST IP: {cls.HOST}")

@@ -3,11 +3,10 @@ from logging.handlers import TimedRotatingFileHandler
 from dbbinance.config import ConfigBinance
 from dbbinance.config import ConfigPostgreSQL
 from dbbinance.fetcher.datafetcher import DataUpdater
-from multiprocessing import get_logger
 
 version = 0.8
 
-logger = get_logger()
+logger = logging.getLogger()
 
 logger.setLevel(logging.INFO)
 
