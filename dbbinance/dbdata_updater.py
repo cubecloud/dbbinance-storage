@@ -2,10 +2,9 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from dbbinance.config import ConfigBinance
 from dbbinance.config import ConfigPostgreSQL
-from dbbinance.config.dockerized import is_pythonunbuffered
 from dbbinance.fetcher.datafetcher import DataUpdater
 
-version = 0.8
+version = 0.80
 
 logger = logging.getLogger()
 
@@ -17,11 +16,10 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
-if is_pythonunbuffered():
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 logging.getLogger('apscheduler').setLevel(logging.INFO)
 

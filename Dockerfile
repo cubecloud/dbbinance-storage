@@ -4,12 +4,11 @@ FROM ubuntu:22.04
 ARG conda_env=dbupdater
 ARG env_file=${conda_env}.yml
 
-LABEL main="${conda_env}"
+LABEL main=dbupdater
 
 RUN apt-get update && apt-get install -y \
     wget \
     git \
-    nano \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Miniconda
@@ -35,5 +34,4 @@ ENV PATH="/opt/conda/envs/${conda_env}/bin:${PATH}"
 ENV PYTHONUNBUFFERED=1
 
 # Start updater
-# CMD ["python", "start.py"]
-CMD ["bash"]
+CMD ["python", "start.py"]

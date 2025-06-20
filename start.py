@@ -1,10 +1,8 @@
 import sys
 import logging
-from logging.handlers import TimedRotatingFileHandler
 from dbbinance.config import ConfigBinance
 from dbbinance.config import ConfigPostgreSQL
 from dbbinance.fetcher.datafetcher import DataUpdater
-from dbbinance.config.dockerized import is_pythonunbuffered
 
 version = 0.80
 

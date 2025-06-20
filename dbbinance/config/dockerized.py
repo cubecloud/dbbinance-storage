@@ -19,15 +19,6 @@ def get_host_ip():
         return None
 
 
-def is_running_in_docker():
-    try:
-        with open("/proc/self/cgroup") as f:
-            content = f.read()
-            return "/docker/" in content or "/crio/" in content
-    except OSError:
-        return False
-
-
 def validate_ip(ip_address):
     """Проверяет, является ли строка корректным IP-адресом."""
     pattern = r'^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$'

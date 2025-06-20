@@ -1,0 +1,1 @@
+cat *.env > temp && sudo docker run -it --env-file=temp -e PSGSQL_HOST_IP=192.168.1.145 dbbinance-image && rm temp

@@ -1,9 +1,9 @@
 import os
 import logging
 from secureapikey import Secure
-from dbbinance.config.dockerized import get_host_ip, is_running_in_docker, validate_ip
+from dbbinance.config.dockerized import validate_ip
 
-__version__ = 0.011
+__version__ = 0.012
 
 logger = logging.getLogger()
 
@@ -34,26 +34,14 @@ class ConfigPostgreSQL:
     # Class method to initialize the HOST attribute
     @classmethod
     def initialize_host(cls):
-        if is_running_in_docker():
-            cls.HOST = get_host_ip()  # Fetch host IP if running in Docker
-            msg = f"ConfigPostgreSQL: Dockerized instance detected - HOST IP: {cls.HOST}"
-            logger.info(msg)
-            print(msg)
+        # Check for the PSGSQL_HOST_IP environment variable
+        potential_host = os.getenv("PSGSQL_HOST_IP", "")
+        if potential_host and validate_ip(potential_host):
+            cls.HOST = potential_host
+            logger.info(f"ConfigPostgreSQL: Using specified HOST IP: {cls.HOST}")
+        elif potential_host:
+            logger.warning(f"Invalid HOST IP specified: {potential_host}, falling back to 'localhost'")
+            cls.HOST = "localhost"
         else:
-            # Check for the PSGSQL_HOST_IP environment variable
-            potential_host = os.getenv("PSGSQL_HOST_IP", "")
-            if potential_host and validate_ip(potential_host):
-                cls.HOST = potential_host
-                msg = f"ConfigPostgreSQL: Using specified HOST IP: {cls.HOST}"
-                logger.info(msg)
-                print(msg)
-            elif potential_host:
-                msg = f"Invalid HOST IP specified: {potential_host}, falling back to localhost."
-                logger.warning(msg)
-                print(msg)
-                cls.HOST = "localhost"
-            else:
-                cls.HOST = "localhost"
-                msg = f"ConfigPostgreSQL: Straight run - HOST IP: {cls.HOST}"
-                logger.info(msg)
-                print(msg)
+            cls.HOST = "localhost"
+            logger.info(f"ConfigPostgreSQL: Straight run - HOST IP: {cls.HOST}")
