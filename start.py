@@ -1,4 +1,4 @@
-
+import sys
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from dbbinance.config import ConfigBinance
@@ -19,7 +19,7 @@ formatter = logging.Formatter('%(asctime)s - %(processName)s - %(name)s - %(leve
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
-console_handler = logging.StreamHandler()
+console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
