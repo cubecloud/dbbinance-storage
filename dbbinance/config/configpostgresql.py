@@ -40,8 +40,9 @@ class ConfigPostgreSQL:
             cls.HOST = potential_host
             logger.info(f"ConfigPostgreSQL: Using specified HOST IP: {cls.HOST}")
         elif potential_host:
-            logger.warning(f"Invalid HOST IP specified: {potential_host}, falling back to 'localhost'")
-            cls.HOST = "localhost"
+
+            logger.warning(f"ConfigPostgreSQL: HOST IP specified: {potential_host}, not validated as IP. Please check it.")
+            cls.HOST = potential_host
         else:
             cls.HOST = "localhost"
             logger.info(f"ConfigPostgreSQL: Straight run - HOST IP: {cls.HOST}")
