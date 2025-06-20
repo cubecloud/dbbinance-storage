@@ -9,6 +9,7 @@ LABEL main="${conda_env}"
 RUN apt-get update && apt-get install -y \
     wget \
     git \
+    nano \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Miniconda
