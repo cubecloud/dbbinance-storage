@@ -34,4 +34,5 @@ ENV PATH="/opt/conda/envs/${conda_env}/bin:${PATH}"
 ENV PYTHONUNBUFFERED=1
 
 # Start updater
-CMD ["python", "start.py"]
+
+CMD ["bash", "-c", "while true; do python -u start.py || sleep 10; done"]
