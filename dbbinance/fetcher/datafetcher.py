@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.71
+__version__ = 0.72
 
 logger = logging.getLogger()
 

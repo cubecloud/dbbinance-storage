@@ -4,7 +4,7 @@ from dbbinance.config.configbinance import ConfigBinance
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.fetcher.datafetcher import DataUpdater
 
-version = 0.80
+version = 0.82
 
 logger = logging.getLogger()
 
