@@ -25,4 +25,5 @@ psg = SQLMeta(host='192.168.1.104',
               user='draggame',
               password='Maxim_2010',
               )
-psg.get_conn()
+with psg.db_mgr as conn:
+    pass

@@ -4,13 +4,13 @@ import pytz
 import logging
 import datetime
 import pandas as pd
-from typing import Tuple, Union
+from typing import Tuple, Union, Optional, List, Any
 from datetime import timezone
 
 from pandas import Timestamp
 
 from dbbinance.fetcher.constants import Constants
-from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors
+from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors, sql
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 from dbbinance.fetcher.datautils import convert_timeframe_to_freq
 from collections import OrderedDict
@@ -70,9 +70,7 @@ class PostgreSQLDatabase(SQLMeta):
 
     @handle_errors
     def is_data_exists(self, table_name):
-        with self.conn.cursor() as cur:
-            cur.execute(f"SELECT * FROM {table_name} LIMIT 1")
-            _data = cur.fetchone()
+        _data = self.db_mgr.single_select_query(sql.SQL("SELECT * FROM {} LIMIT 1").format(sql.Identifier(table_name)))
         if _data is None:
             data_exists = False
         else:
@@ -80,50 +78,91 @@ class PostgreSQLDatabase(SQLMeta):
         return data_exists
 
     @handle_errors
-    def create_table(self, table_name="spot_data"):
-        # Start a transaction
-        if not self.is_table_exists(table_name):
-            conn = self.conn  # Used for optimizing calls of @property
+    def create_table(self, table_name: str):
+        """
+        Creates a new table in the database.
+
+        Args:
+            table_name (str): Name of the table to create.
+        """
+        columns_definition = [
+            ("id", "SERIAL PRIMARY KEY"),
+            ("open_time", "BIGINT"),
+            ("open", "NUMERIC"),
+            ("high", "NUMERIC"),
+            ("low", "NUMERIC"),
+            ("close", "NUMERIC"),
+            ("volume", "NUMERIC"),
+            ("close_time", "BIGINT"),
+            ("quote_asset_volume", "NUMERIC"),
+            ("trades", "INTEGER"),
+            ("taker_buy_base", "NUMERIC"),
+            ("taker_buy_quote", "NUMERIC"),
+            ("ignored", "NUMERIC")
+        ]
+
+        # Build the CREATE TABLE query dynamically
+        query = sql.SQL("CREATE TABLE {} ({})").format(
+            sql.Identifier(table_name),
+            sql.SQL(", ").join([sql.SQL("{0} {1}").format(sql.Identifier(col), sql.SQL(data_type)) for col, data_type in
+                                columns_definition])
+        )
+
+        # Execute the constructed query
+        with self.db_mgr as conn:
             with conn.cursor() as cur:
-                query = f"CREATE TABLE {table_name} (id SERIAL PRIMARY KEY, open_time BIGINT, open NUMERIC, high NUMERIC," \
-                        f" low NUMERIC, close NUMERIC, volume NUMERIC, close_time BIGINT, quote_asset_volume NUMERIC, " \
-                        f"trades INTEGER, taker_buy_base NUMERIC, taker_buy_quote NUMERIC, ignored NUMERIC)"
                 cur.execute(query)
             conn.commit()
-            logger.debug(f"{self.__class__.__name__}: Created table '{table_name}'")
+        logger.debug(f"{self.__class__.__name__}: Created table '{table_name}'")
 
-    # @handle_errors
     def insert_kline_to_table(self, table_name, kline):
-        # Start a transaction
-        conn = self.conn  # Used for optimizing calls of @property
-        with conn.cursor() as cur:
-            cur.execute("BEGIN;")
-            cur.execute(f"LOCK TABLE {table_name} IN ACCESS EXCLUSIVE MODE;")
+        """
+        Insert a K-line record into the specified table.
 
-            open_time, open_price, high_price, low_price, close_price, volume, close_time, quote_asset_volume, \
-                trades, taker_buy_base, taker_buy_quote, ignored = kline[:12]
-            query = f"INSERT INTO {table_name} (open_time, open, high, low, close, volume, close_time, " \
-                    f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
-                    f"VALUES ('{open_time}', '{open_price}', '{high_price}', '{low_price}', '{close_price}', " \
-                    f"'{volume}', '{close_time}', '{quote_asset_volume}', '{trades}', '{taker_buy_base}', " \
-                    f"'{taker_buy_quote}', '{ignored}')"
-            cur.execute(query)
-        conn.commit()
-        conn.close()
+        Args:
+            table_name (str): Name of the target table.
+            kline (list): Array of values representing the K-line data.
+        """
+        # Unpack kline values
+        open_time, open_price, high_price, low_price, close_price, volume, close_time, \
+            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[:12]
 
-    # @handle_errors
+        # Correct way to reference table name using Identifier
+        query = sql.SQL("""
+            INSERT INTO {table} (
+                open_time, open, high, low, close, volume, close_time, 
+                quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        """).format(
+            table=sql.Identifier(table_name)
+        )
+        # Execute the query with tuple of values
+        if not self.db_mgr.modify_query(query, (open_time, open_price, high_price, low_price, close_price, volume,
+                                                close_time, quote_asset_volume, trades, taker_buy_base, taker_buy_quote,
+                                                ignored)):
+            logger.debug(
+                f"{self.__class__.__name__} #{self.idnum}': kline {open_time} {open_price} {high_price}... not saved")
+
     def insert_klines_to_table(self, table_name, klines):
-        # Start a transaction
-        conn = self.conn  # Used for optimizing calls of @property
-        with conn.cursor() as cur:
-            cur.execute("BEGIN;")
-            cur.execute(f"LOCK TABLE {table_name} IN ACCESS EXCLUSIVE MODE;")
+        """
+        Insert a K-line records into the specified table.
 
-            query = f"INSERT INTO {table_name} (open_time, open, high, low, close, volume, close_time, " \
-                    f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
-                    f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
-            cur.executemany(query, klines)
-        conn.commit()
+        Args:
+            table_name (str): Name of the target table.
+            klines (list): Array of values representing the K-line data.
+        """
+
+        query = f"INSERT INTO {table_name} (open_time, open, high, low, close, volume, close_time, " \
+                f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
+                f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+
+        with self.db_mgr as conn:
+            with conn.cursor() as cur:
+                cur.execute("BEGIN;")
+                # Exclusive lock the table before dropping
+                cur.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE;").format(sql.Literal(table_name)))
+                cur.executemany(query, klines)
+            conn.commit()
 
     def logger_debug(self, msg):
         if self.max_verbose:
@@ -133,27 +172,27 @@ class PostgreSQLDatabase(SQLMeta):
     def get_min_open_time(self, table_name, retry=10) -> int:
         self.logger_debug(
             f"{self.__class__.__name__}: get_min_open_time called with table_name={table_name} and retry={retry}")
-        conn = self.conn  # Used for optimizing calls of @property
-        try:
-            with conn.cursor() as cur:
-                query = f"SELECT MIN(open_time) FROM {table_name}"
-                self.logger_debug(f"{self.__class__.__name__}: Executing query: {query}")
-                cur.execute(query)
-                if cur.rowcount != 0:
-                    min_open_time = cur.fetchone()[0]
-                    self.logger_debug(f"{self.__class__.__name__}:Query returned min_open_time={min_open_time}")
-                else:
-                    self.logger_debug(f"{self.__class__.__name__}: Query returned no rows")
-                    if retry > 0:
-                        self.logger_debug(f"{self.__class__.__name__}: Retrying with retry={retry - 1}")
-                        min_open_time = self.get_min_open_time(table_name, retry - 1)
+        with self.db_mgr as conn:
+            try:
+                with conn.cursor() as cur:
+                    query = f"SELECT MIN(open_time) FROM {table_name}"
+                    self.logger_debug(f"{self.__class__.__name__}: Executing query: {query}")
+                    cur.execute(query)
+                    if cur.rowcount != 0:
+                        min_open_time = cur.fetchone()[0]
+                        self.logger_debug(f"{self.__class__.__name__}:Query returned min_open_time={min_open_time}")
                     else:
-                        self.logger_debug(f"{self.__class__.__name__}: No more retries left")
-                        min_open_time = None
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
-            min_open_time = None
+                        self.logger_debug(f"{self.__class__.__name__}: Query returned no rows")
+                        if retry > 0:
+                            self.logger_debug(f"{self.__class__.__name__}: Retrying with retry={retry - 1}")
+                            min_open_time = self.get_min_open_time(table_name, retry - 1)
+                        else:
+                            self.logger_debug(f"{self.__class__.__name__}: No more retries left")
+                            min_open_time = None
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
+                min_open_time = None
 
         if (not min_open_time) or (min_open_time is None):
             min_open_time = datetime.datetime.strptime('01 Jan 2017', '%d %b %Y')
@@ -167,27 +206,27 @@ class PostgreSQLDatabase(SQLMeta):
     def get_max_open_time(self, table_name, retry=10) -> int:
         self.logger_debug(
             f"{self.__class__.__name__}:get_max_open_time called with table_name={table_name} and retry={retry}")
-        conn = self.conn  # Used for optimizing calls of @property
-        try:
-            with conn.cursor() as cur:
-                query = f"SELECT MAX(open_time) FROM {table_name}"
-                self.logger_debug(f"{self.__class__.__name__}: Executing query: {query}")
-                cur.execute(query)
-                if cur.rowcount != 0:
-                    max_open_time = cur.fetchone()[0]
-                    self.logger_debug(f"{self.__class__.__name__}: Query returned max_open_time={max_open_time}")
-                else:
-                    self.logger_debug(f"{self.__class__.__name__}: Query returned no rows")
-                    if retry > 0:
-                        self.logger_debug(f"{self.__class__.__name__}: Retrying with retry={retry - 1}")
-                        max_open_time = self.get_min_open_time(table_name, retry - 1)
+        with self.db_mgr as conn:
+            try:
+                with conn.cursor() as cur:
+                    query = f"SELECT MAX(open_time) FROM {table_name}"
+                    self.logger_debug(f"{self.__class__.__name__}: Executing query: {query}")
+                    cur.execute(query)
+                    if cur.rowcount != 0:
+                        max_open_time = cur.fetchone()[0]
+                        self.logger_debug(f"{self.__class__.__name__}: Query returned max_open_time={max_open_time}")
                     else:
-                        self.logger_debug(f"{self.__class__.__name__}: No more retries left")
-                        max_open_time = None
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
-            max_open_time = None
+                        self.logger_debug(f"{self.__class__.__name__}: Query returned no rows")
+                        if retry > 0:
+                            self.logger_debug(f"{self.__class__.__name__}: Retrying with retry={retry - 1}")
+                            max_open_time = self.get_max_open_time(table_name, retry - 1)
+                        else:
+                            self.logger_debug(f"{self.__class__.__name__}: No more retries left")
+                            max_open_time = None
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
+                max_open_time = None
         if (not max_open_time) or (max_open_time is None):
             max_open_time = datetime.datetime.now(timezone.utc)
             max_open_time = int(datetime.datetime.timestamp(max_open_time) * 1000)
@@ -198,15 +237,16 @@ class PostgreSQLDatabase(SQLMeta):
 
     @handle_errors
     def is_duplicates_exists(self, table_name, show=True) -> bool:
-        with self.conn.cursor() as cur:
-            query = f"""
+        query = sql.SQL("""
             SELECT open_time, COUNT(*)
-            FROM {table_name}
+            FROM {table}
             GROUP BY open_time
             HAVING COUNT(*) > 1;
-            """
-            cur.execute(query)
-            duplicates = cur.fetchall()
+        """).format(
+            table=sql.Identifier(table_name)
+        )
+
+        duplicates = self.db_mgr.select_query(query)
         status = False
         if duplicates:
             status = True
@@ -218,23 +258,23 @@ class PostgreSQLDatabase(SQLMeta):
 
     @handle_errors
     def drop_duplicates_rows(self, table_name):
-        conn = self.conn
-        with conn.cursor() as cur:
-            query = f"""
-            DELETE FROM {table_name}
+        query = sql.SQL("""
+            DELETE FROM {table}
             WHERE id IN (
                 SELECT id
                 FROM (
                     SELECT id,
-                    ROW_NUMBER() OVER( PARTITION BY open_time ORDER BY id ) AS row_num
-                    FROM {table_name}
+                           ROW_NUMBER() OVER(PARTITION BY open_time ORDER BY id) AS row_num
+                    FROM {table}
                 ) t
                 WHERE t.row_num > 1
             );
-            """
-            cur.execute(query)
-        conn.commit()
-        conn.close()
+        """).format(
+            table=sql.Identifier(table_name)
+        )
+
+        if not self.db_mgr.modify_query(query):
+            logger.warning(f"{self.__class__.__name__}: Can't drop duplicates:")
 
 
 class DataRepair:
@@ -251,7 +291,8 @@ class DataRepair:
         self.ts_start_end_open_time_before: Tuple = (None, None)
         self.ts_start_end_open_time_after: Tuple = (None, None)
 
-    def get_kline_period(self, start_point, end_point, symbol_pair, timeframe) -> list:
+    def get_kline_period(self, start_point, end_point, symbol_pair, timeframe) -> List[Any]:
+        klines = []
         try:
             klines = self.client.get_historical_klines(symbol_pair,
                                                        timeframe,
@@ -618,8 +659,8 @@ class DataUpdaterMeta(PostgreSQLDatabase):
 
     def prepare_start_end(self,
                           table_name: str,
-                          start: datetime.datetime or int or str or None,
-                          end: datetime.datetime or int or str or None) -> Tuple[int, int]:
+                          start: Optional[Union[datetime.datetime, int, str]],
+                          end: Optional[Union[datetime.datetime, int, str]]) -> Tuple[int, int]:
 
         if isinstance(start, int):
             start_timestamp = int(start)
@@ -655,7 +696,6 @@ class DataUpdater(DataUpdaterMeta):
     def __init__(self, host, database, user, password, binance_api_key, binance_api_secret,
                  symbol_pairs=None, timeframes=None):
         super().__init__(host, database, user, password, binance_api_key, binance_api_secret, symbol_pairs, timeframes)
-
 
     def check_first_run(self):
         """ Check if this a first run """
@@ -694,6 +734,7 @@ class DataUpdater(DataUpdaterMeta):
         start_time = datetime.datetime.now(timezone.utc)
         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Start fetching historical data for "
                      f"{symbol_pair}, {timeframe}: {start_time}")
+        klines = []
         try:
             klines = self.client.get_historical_klines(symbol=symbol_pair,
                                                        interval=timeframe,
@@ -778,8 +819,8 @@ class DataUpdater(DataUpdaterMeta):
     # @handle_errors
     def get_data_as_df(self,
                        table_name: str,
-                       start: datetime.datetime or int,
-                       end: datetime.datetime or int,
+                       start: Union[datetime.datetime, int],
+                       end: Union[datetime.datetime, int],
                        use_cols=Constants.sql_cols,
                        use_dtypes=None,
                        ) -> pd.DataFrame:
@@ -789,23 +830,31 @@ class DataUpdater(DataUpdaterMeta):
             use_dtypes = Constants.sql_dtypes
 
         start_timestamp, end_timestamp = self.prepare_start_end(table_name, start, end)
+        query = sql.SQL("""
+            SELECT {cols}
+            FROM {table}
+            WHERE open_time BETWEEN {start_ts} AND {end_ts}
+            ORDER BY open_time
+        """).format(
+            cols=sql.SQL(', ').join(map(sql.Identifier, use_cols)),  # Join column names safely
+            table=sql.Identifier(table_name),  # Protect against SQL injection
+            start_ts=sql.Literal(start_timestamp),  # Escape timestamps
+            end_ts=sql.Literal(end_timestamp)  # Escape timestamps
+        )
+        logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
+                     f"Start getting historical data from database table {table_name} at: {_start_time}")
+        data = self.db_mgr.select_query(query)
 
-        with self.conn.cursor() as cur:
-            query = f"SELECT {', '.join(use_cols)} FROM {table_name} " \
-                    f"WHERE open_time BETWEEN '{start_timestamp}' AND '{end_timestamp}' ORDER BY open_time"
-            logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
-                         f"Start getting historical data from database table {table_name} at: {_start_time}")
-            cur.execute(query)
-            data = cur.fetchall()
-            logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
-                         f"Finished getting historical data from database table {table_name} at: "
-                         f"{datetime.datetime.now(timezone.utc)}. "
-                         f"ETA: {datetime.datetime.now(timezone.utc) - _start_time}")
+        logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
+                     f"Finished getting historical data from database table {table_name} at: "
+                     f"{datetime.datetime.now(timezone.utc)}. "
+                     f"ETA: {datetime.datetime.now(timezone.utc) - _start_time}")
+
         data_df = pd.DataFrame(data, columns=list(use_cols))
         data_df = data_df.astype(use_dtypes)
         return data_df
 
-    def is_symbol_pair_available(self, market, symbol_pair) -> list:
+    def is_symbol_pair_available(self, market, symbol_pair) -> bool:
         base_table_name = f"{market}_data"
         timeframe = "1m"
         table_name = f"{base_table_name}_{symbol_pair}_{timeframe}".lower()
@@ -842,7 +891,7 @@ class DataUpdater(DataUpdaterMeta):
             logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
                          f"'{table_name}' - Start saving repaired data back to database: {start_time}")
             data_df = data_df.drop(columns="id")
-            self.insert_klines_to_table(table_name, data_df.to_numpy())
+            self.insert_klines_to_table(table_name, data_df.as_list())
             logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
                          f"'{table_name}' - data saved. ETA: {datetime.datetime.now(timezone.utc) - start_time}")
         else:
@@ -904,8 +953,8 @@ class DataFetcher(DataUpdaterMeta):
 
     def resample_to_timeframe(self,
                               table_name: str,
-                              start: datetime.datetime or int,
-                              end: datetime.datetime or int,
+                              start: Union[datetime.datetime, int],
+                              end: Union[datetime.datetime, int],
                               to_timeframe: str = "1h",
                               origin: str = "start",
                               use_cols: tuple = Constants.binance_cols,
@@ -915,16 +964,23 @@ class DataFetcher(DataUpdaterMeta):
                               ) -> pd.DataFrame:
 
         def fetch_raw_data():
-            conn = self.get_conn()
-            conn.set_session(readonly=True, autocommit=True)
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"SELECT {', '.join(use_cols)} "
-                    f"FROM {table_name} "
-                    f"WHERE open_time >= {start_timestamp} AND open_time <= {end_timestamp}")
-                raw_data = cur.fetchall()
-            conn.close()
-            return raw_data
+            query = sql.SQL("""
+                SELECT {cols}
+                FROM {table}
+                WHERE open_time >= {start_ts} AND open_time <= {end_ts};
+            """).format(
+                cols=sql.SQL(', ').join(map(sql.Identifier, use_cols)),
+                table=sql.Identifier(table_name),
+                start_ts=sql.Literal(start_timestamp),
+                end_ts=sql.Literal(end_timestamp)
+            )
+
+            with self.db_mgr as conn:
+                conn.set_session(readonly=True, autocommit=True)
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    raw_data = cur.fetchall()
+                return raw_data
 
         def prepare_raw_df():
             _df = pd.DataFrame(fetch_raw_data(), columns=list(use_cols))

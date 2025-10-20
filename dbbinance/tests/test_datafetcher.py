@@ -2,6 +2,8 @@ import logging
 import datetime
 from datetime import timezone
 
+import pandas as pd
+
 from dbbinance.fetcher import Constants
 from dbbinance.fetcher import DataFetcher
 from dbbinance.fetcher import ceil_time, floor_time
@@ -85,6 +87,9 @@ _data_df_3 = fetcher2.resample_to_timeframe(table_name="spot_data_btcusdt_1m",
                                             cached=False)
 logger.debug(f"data_df_3 head: \n{_data_df_3.head(15).to_string()}\n")
 logger.debug(f"data_df_3 tail: \n{_data_df_3.tail(15).to_string()}\n")
-logger.debug("\nCompare result:\n")
-logger.debug(_data_df.compare(_data_df_3, align_axis=0).to_string())
+result_df = _data_df.compare(_data_df_3, align_axis=0)
+if result_df.empty:
+    logger.debug("Compare result: Test Passed")
+else:
+    logger.debug("Compare result: Test Failed")
 """ End testing resample_to_timeframe method """
