@@ -159,8 +159,8 @@ class PostgreSQLDatabase(SQLMeta):
         with self.db_mgr as conn:
             with conn.cursor() as cur:
                 cur.execute("BEGIN;")
-                # Exclusive lock the table before dropping
-                cur.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE;").format(sql.Literal(table_name)))
+                # Exclusive lock the table before inserting
+                cur.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE;").format(sql.Identifier(table_name)))
                 cur.executemany(query, klines)
             conn.commit()
 
