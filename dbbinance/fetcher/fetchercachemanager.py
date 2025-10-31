@@ -2,11 +2,11 @@ from typing import Union
 from collections import OrderedDict
 from mlthread_tools import mlt_mutex
 import objsize
-import logging
+from multiprocessing import get_logger
 
-__version__ = 0.030
+__version__ = 0.032
 
-logger = logging.getLogger()
+logger = get_logger()
 
 
 class FetcherCacheManager:

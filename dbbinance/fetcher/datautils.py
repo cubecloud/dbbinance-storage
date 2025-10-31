@@ -6,7 +6,7 @@ import datetime
 import numpy as np
 import pandas as pd
 import unicodedata
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Callable, Optional
 
 from sklearn.utils import compute_class_weight
 
@@ -25,7 +25,7 @@ timedelta_dict: dict = {'d': 'days',
                         }
 
 
-def check_convert_to_datetime(check_datetime: datetime.datetime or str or int or None, utc_aware=True):
+def check_convert_to_datetime(check_datetime: Optional[Union[datetime.datetime, str, int]], utc_aware=True):
     if isinstance(check_datetime, datetime.datetime):
         checked = check_datetime
     elif isinstance(check_datetime, str):
@@ -97,7 +97,7 @@ def get_nearest_timeframe(bins: int) -> str:
     return result
 
 
-def get_timedelta_kwargs(_period: int or str, current_timeframe: str = "1h") -> dict:
+def get_timedelta_kwargs(_period: Union[int, str], current_timeframe: str = "1h") -> dict:
     """
 
     Args:
@@ -175,7 +175,8 @@ def logarithmicscaler(new_data):
     return _temp
 
 
-def set_apply_func(apply_func):
+def set_apply_func(apply_func) -> Optional[Callable]:
+    func = None
     if apply_func is None or apply_func == 'minmaxscaler':
         func = minmax_normalization
     elif apply_func == 'minmaxscaler_1_1':

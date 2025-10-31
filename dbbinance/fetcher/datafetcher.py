@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.72
+__version__ = 0.74
 
 logger = logging.getLogger()
 
@@ -941,8 +941,15 @@ cache_manager_obj = FetcherCacheManager(max_memory_gb=2)
 class DataFetcher(DataUpdaterMeta):
     CM = cache_manager_obj
 
-    def __init__(self, host, database, user, password, binance_api_key, binance_api_secret):
+    def __init__(self, host, database, user, password, binance_api_key, binance_api_secret,
+                 cache_obj: Optional[FetcherCacheManager] = None):
+        if cache_obj is not None:
+            self.set_new_cache_obj(cache_obj)
         super().__init__(host, database, user, password, binance_api_key, binance_api_secret)
+
+    @classmethod
+    def set_new_cache_obj(cls, cache_obj):
+        cls.CM = cache_obj
 
     def _get_agg_dict(self, use_cols):
         actual_agg_dict = OrderedDict()

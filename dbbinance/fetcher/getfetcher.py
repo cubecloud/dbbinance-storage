@@ -1,13 +1,16 @@
+from typing import Optional
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.fetcher.datafetcher import DataFetcher
+from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 
-__version__ = 0.002
+__version__ = 0.003
 
 
 def get_datafetcher(host=ConfigPostgreSQL.HOST,
                     database=ConfigPostgreSQL.DATABASE,
                     user=ConfigPostgreSQL.USER,
-                    password=ConfigPostgreSQL.PASSWORD) -> DataFetcher:
+                    password=ConfigPostgreSQL.PASSWORD,
+                    cache_obj: Optional[FetcherCacheManager] = None) -> DataFetcher:
     """ Decrypt binance api key and binance api secret """
 
     psg_kwargs = dict(host=host,
@@ -20,7 +23,8 @@ def get_datafetcher(host=ConfigPostgreSQL.HOST,
                         binance_api_secret="dummy")
 
     fetcher_obj_kwargs = dict(**psg_kwargs,
-                              **dummy_kwargs)
+                              **dummy_kwargs,
+                              cache_obj=cache_obj)
 
     data_fetcher_obj = DataFetcher(**fetcher_obj_kwargs)
 
