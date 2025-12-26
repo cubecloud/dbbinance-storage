@@ -1,11 +1,11 @@
 import logging
 import psycopg2
-from typing import Union, List, Any, Tuple, Optional
+from typing import List, Tuple, Optional
 from psycopg2 import sql
-from psycopg2.pool import SimpleConnectionPool
+from psycopg2.pool import SimpleConnectionPool, ThreadedConnectionPool
 from collections import OrderedDict
 
-__version__ = 0.012
+__version__ = 0.013
 
 logger = logging.getLogger()
 
@@ -37,7 +37,7 @@ class DBConnectionManager:
             host (str): Address of the database server (default is localhost).
         """
         # Create a new connection pool instance
-        self.pool = SimpleConnectionPool(
+        self.pool = ThreadedConnectionPool(
             dbname=database,
             user=user,
             password=password,
@@ -96,6 +96,8 @@ class DBConnectionManager:
                     cur.execute(query, params)
                     self.conn.commit()
             return True
+        except psycopg2.pool.PoolError as e:
+            print(f"Error getting connection from pool - {e}")
         except psycopg2.Error as e:
             logger.debug(f"Database error: {e}")
             raise
@@ -125,6 +127,8 @@ class DBConnectionManager:
                     cur.execute(query, params)
                     result = cur.fetchone()
                     return result
+        except psycopg2.pool.PoolError as e:
+            print(f"Error getting connection from pool - {e}")
         except psycopg2.Error as e:
             logger.debug(f"Database error: {e}")
             raise
@@ -153,6 +157,8 @@ class DBConnectionManager:
                     cur.execute(query, params)
                     result = cur.fetchall()
                     return result
+        except psycopg2.pool.PoolError as e:
+            print(f"Error getting connection from pool - {e}")
         except psycopg2.Error as e:
             logger.debug(f"Database error: {e}")
             raise
