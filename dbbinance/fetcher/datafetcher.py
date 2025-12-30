@@ -744,9 +744,10 @@ class DataUpdater(DataUpdaterMeta):
             logger.debug(f'Exception {error_msg}')
         else:
             if klines:
+
                 logger.debug(f"Timeframes: {len(klines)}, ETA: {datetime.datetime.now(timezone.utc) - start_time} "
-                             f"start: {datetime.datetime.utcfromtimestamp(klines[0][0] / 1000).replace(tzinfo=pytz.utc)}, "
-                             f"end: {datetime.datetime.utcfromtimestamp(klines[-1][0] / 1000).replace(tzinfo=pytz.utc)}")
+                             f"start: {datetime.datetime.fromtimestamp(klines[0][0] / 1000, tz=pytz.utc)}, "
+                             f"end: {datetime.datetime.fromtimestamp(klines[-1][0] / 1000, tz=pytz.utc)}")
 
         start_time = datetime.datetime.now(timezone.utc)
         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Start saving historical data to database for "
@@ -781,8 +782,7 @@ class DataUpdater(DataUpdaterMeta):
                 for timeframe in self.timeframes:
                     table_name = f"{base_table_name}_{symbol_pair}_{timeframe}".lower()
                     start_open_time = self.get_max_open_time(table_name)
-                    start_open_time = datetime.datetime.utcfromtimestamp(start_open_time / 1000).replace(
-                        tzinfo=pytz.utc)
+                    start_open_time = datetime.datetime.fromtimestamp(start_open_time / 1000, tz=pytz.utc)
                     start_open_time = start_open_time + datetime.timedelta(
                         minutes=self.convert_timeframe_to_min(timeframe))
                     until_open_time = start_open_time + datetime.timedelta(days=365)
@@ -804,8 +804,8 @@ class DataUpdater(DataUpdaterMeta):
                         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Updater - exception {error_msg}")
                     else:
                         if klines:
-                            self.last_timeframe_datetime = datetime.datetime.utcfromtimestamp(
-                                klines[-1][0] / 1000).replace(tzinfo=pytz.utc)
+                            self.last_timeframe_datetime = datetime.datetime.fromtimestamp(
+                                klines[-1][0] / 1000, tz=pytz.utc)
                             logger.info(
                                 f"{self.__class__.__name__} #{self.idnum}: Updater - {table_name} - "
                                 f"timeframes: {len(klines)}. Last timeframe: {self.last_timeframe_datetime}")
