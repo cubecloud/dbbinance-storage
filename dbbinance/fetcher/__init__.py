@@ -10,6 +10,7 @@ from dbbinance.fetcher.datafetcher import PostgreSQLDatabase
 from dbbinance.fetcher.datafetcher import DataUpdater
 from dbbinance.fetcher.datafetcher import DataRepair
 from dbbinance.fetcher.sqlbase import SQLMeta
+from dbbinance.fetcher.sqlbase import ThreadPool
 from dbbinance.fetcher.sqlbase import handle_errors
 from dbbinance.fetcher.datautils import *
 from dbbinance.fetcher.singleton import Singleton
