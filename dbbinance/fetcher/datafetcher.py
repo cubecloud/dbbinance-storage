@@ -10,7 +10,7 @@ from datetime import timezone
 from pandas import Timestamp
 
 from dbbinance.fetcher.constants import Constants
-from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors, sql
+from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors, sql, ThreadPool
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 from dbbinance.fetcher.datautils import convert_timeframe_to_freq
 from collections import OrderedDict
@@ -109,7 +109,7 @@ class PostgreSQLDatabase(SQLMeta):
         )
 
         # Execute the constructed query
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             with conn.cursor() as cur:
                 cur.execute(query)
             conn.commit()
@@ -156,7 +156,7 @@ class PostgreSQLDatabase(SQLMeta):
                 f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
                 f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             with conn.cursor() as cur:
                 cur.execute("BEGIN;")
                 # Exclusive lock the table before inserting
@@ -172,7 +172,7 @@ class PostgreSQLDatabase(SQLMeta):
     def get_min_open_time(self, table_name, retry=10) -> int:
         self.logger_debug(
             f"{self.__class__.__name__}: get_min_open_time called with table_name={table_name} and retry={retry}")
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             try:
                 with conn.cursor() as cur:
                     query = f"SELECT MIN(open_time) FROM {table_name}"
@@ -206,7 +206,7 @@ class PostgreSQLDatabase(SQLMeta):
     def get_max_open_time(self, table_name, retry=10) -> int:
         self.logger_debug(
             f"{self.__class__.__name__}:get_max_open_time called with table_name={table_name} and retry={retry}")
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             try:
                 with conn.cursor() as cur:
                     query = f"SELECT MAX(open_time) FROM {table_name}"
@@ -982,7 +982,7 @@ class DataFetcher(DataUpdaterMeta):
                 end_ts=sql.Literal(end_timestamp)
             )
 
-            with self.db_mgr as conn:
+            with ThreadPool() as conn:
                 conn.set_session(readonly=True, autocommit=True)
                 with conn.cursor() as cur:
                     cur.execute(query)
