@@ -5,7 +5,7 @@ from psycopg2 import sql
 from psycopg2.pool import SimpleConnectionPool
 from collections import OrderedDict
 
-__version__ = 0.012
+__version__ = 0.013
 
 logger = logging.getLogger()
 
@@ -24,7 +24,7 @@ def handle_errors(func):
 class DBConnectionManager:
     """Class managing database connections through a connection pool."""
 
-    def __init__(self, database=None, user=None, password=None, minconn=1, maxconn=10, host='localhost'):
+    def __init__(self, database=None, user=None, password=None, minconn=1, maxconn=5, host='localhost'):
         """
         Initializes the connection pool with provided configuration settings.
 
@@ -180,7 +180,7 @@ class SQLMeta:
                                           database=database,
                                           user=user,
                                           password=password,
-                                          minconn=1,
+                                          minconn=minconn,
                                           maxconn=maxconn)
 
         self.__connections = OrderedDict()  # Will be Deprecated in future
