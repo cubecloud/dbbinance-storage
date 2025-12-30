@@ -10,7 +10,7 @@ from datetime import timezone
 from pandas import Timestamp
 
 from dbbinance.fetcher.constants import Constants
-from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors, sql
+from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors, sql, ThreadPool
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 from dbbinance.fetcher.datautils import convert_timeframe_to_freq
 from collections import OrderedDict
@@ -109,7 +109,7 @@ class PostgreSQLDatabase(SQLMeta):
         )
 
         # Execute the constructed query
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             with conn.cursor() as cur:
                 cur.execute(query)
             conn.commit()
@@ -156,7 +156,7 @@ class PostgreSQLDatabase(SQLMeta):
                 f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
                 f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             with conn.cursor() as cur:
                 cur.execute("BEGIN;")
                 # Exclusive lock the table before inserting
@@ -172,7 +172,7 @@ class PostgreSQLDatabase(SQLMeta):
     def get_min_open_time(self, table_name, retry=10) -> int:
         self.logger_debug(
             f"{self.__class__.__name__}: get_min_open_time called with table_name={table_name} and retry={retry}")
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             try:
                 with conn.cursor() as cur:
                     query = f"SELECT MIN(open_time) FROM {table_name}"
@@ -206,7 +206,7 @@ class PostgreSQLDatabase(SQLMeta):
     def get_max_open_time(self, table_name, retry=10) -> int:
         self.logger_debug(
             f"{self.__class__.__name__}:get_max_open_time called with table_name={table_name} and retry={retry}")
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             try:
                 with conn.cursor() as cur:
                     query = f"SELECT MAX(open_time) FROM {table_name}"
@@ -744,9 +744,10 @@ class DataUpdater(DataUpdaterMeta):
             logger.debug(f'Exception {error_msg}')
         else:
             if klines:
+
                 logger.debug(f"Timeframes: {len(klines)}, ETA: {datetime.datetime.now(timezone.utc) - start_time} "
-                             f"start: {datetime.datetime.utcfromtimestamp(klines[0][0] / 1000).replace(tzinfo=pytz.utc)}, "
-                             f"end: {datetime.datetime.utcfromtimestamp(klines[-1][0] / 1000).replace(tzinfo=pytz.utc)}")
+                             f"start: {datetime.datetime.fromtimestamp(klines[0][0] / 1000, tz=pytz.utc)}, "
+                             f"end: {datetime.datetime.fromtimestamp(klines[-1][0] / 1000, tz=pytz.utc)}")
 
         start_time = datetime.datetime.now(timezone.utc)
         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Start saving historical data to database for "
@@ -781,8 +782,7 @@ class DataUpdater(DataUpdaterMeta):
                 for timeframe in self.timeframes:
                     table_name = f"{base_table_name}_{symbol_pair}_{timeframe}".lower()
                     start_open_time = self.get_max_open_time(table_name)
-                    start_open_time = datetime.datetime.utcfromtimestamp(start_open_time / 1000).replace(
-                        tzinfo=pytz.utc)
+                    start_open_time = datetime.datetime.fromtimestamp(start_open_time / 1000, tz=pytz.utc)
                     start_open_time = start_open_time + datetime.timedelta(
                         minutes=self.convert_timeframe_to_min(timeframe))
                     until_open_time = start_open_time + datetime.timedelta(days=365)
@@ -804,8 +804,8 @@ class DataUpdater(DataUpdaterMeta):
                         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Updater - exception {error_msg}")
                     else:
                         if klines:
-                            self.last_timeframe_datetime = datetime.datetime.utcfromtimestamp(
-                                klines[-1][0] / 1000).replace(tzinfo=pytz.utc)
+                            self.last_timeframe_datetime = datetime.datetime.fromtimestamp(
+                                klines[-1][0] / 1000, tz=pytz.utc)
                             logger.info(
                                 f"{self.__class__.__name__} #{self.idnum}: Updater - {table_name} - "
                                 f"timeframes: {len(klines)}. Last timeframe: {self.last_timeframe_datetime}")
@@ -982,7 +982,7 @@ class DataFetcher(DataUpdaterMeta):
                 end_ts=sql.Literal(end_timestamp)
             )
 
-            with self.db_mgr as conn:
+            with ThreadPool() as conn:
                 conn.set_session(readonly=True, autocommit=True)
                 with conn.cursor() as cur:
                     cur.execute(query)
