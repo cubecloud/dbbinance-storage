@@ -1,11 +1,11 @@
 import logging
 import psycopg2
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Any
 from psycopg2 import sql
 from psycopg2.pool import SimpleConnectionPool, ThreadedConnectionPool
 from collections import OrderedDict
 
-__version__ = 0.013
+__version__ = 0.014
 
 logger = logging.getLogger()
 
@@ -21,30 +21,19 @@ def handle_errors(func):
     return wrapper
 
 
-class DBConnectionManager:
+_pool: Optional[ThreadedConnectionPool] = None
+
+
+class ThreadPool:
     """Class managing database connections through a connection pool."""
 
-    def __init__(self, database=None, user=None, password=None, minconn=1, maxconn=10, host='localhost'):
-        """
-        Initializes the connection pool with provided configuration settings.
-
-        Args:
-            database (str): Name of the database to connect to.
-            user (str): User account used for authentication.
-            password (str): Password associated with the user account.
-            minconn (int): Minimum number of connections maintained in the pool.
-            maxconn (int): Maximum number of connections allowed in the pool.
-            host (str): Address of the database server (default is localhost).
-        """
+    def __init__(self, pool: Optional[ThreadedConnectionPool] = None):
         # Create a new connection pool instance
-        self.pool = ThreadedConnectionPool(
-            dbname=database,
-            user=user,
-            password=password,
-            minconn=minconn,
-            maxconn=maxconn,
-            host=host
-        )
+        if pool is None:
+            self.pool = _pool
+        else:
+            self.pool = pool
+        self.conn = None
 
     def __enter__(self):
         """
@@ -75,12 +64,34 @@ class DBConnectionManager:
         if exc_type is not None:
             raise exc_val.with_traceback(exc_tb)
 
-    def __del__(self):
+
+class DBConnectionManager:
+    def __init__(self, database=None, user=None, password=None, minconn=1, maxconn=10, host='localhost'):
         """
-        Destructor, cleans up resources like closing the connection pool.
+        Initializes the connection pool with provided configuration settings.
+
+        Args:
+            database (str): Name of the database to connect to.
+            user (str): User account used for authentication.
+            password (str): Password associated with the user account.
+            minconn (int): Minimum number of connections maintained in the pool.
+            maxconn (int): Maximum number of connections allowed in the pool.
+            host (str): Address of the database server (default is localhost).
         """
-        if hasattr(self, 'pool') and self.pool is not None:
-            self.pool.closeall()
+        # Create a new connection pool instance
+        global _pool
+        if _pool is None:
+            _pool = ThreadedConnectionPool(
+                dbname=database,
+                user=user,
+                password=password,
+                minconn=minconn,
+                maxconn=maxconn,
+                host=host
+            )
+        else:
+            self.pool = _pool
+        self.conn = None
 
     def modify_query(self, query, params=None) -> bool:
         """
@@ -91,10 +102,10 @@ class DBConnectionManager:
             params (tuple|list, optional): Parameters to substitute into the query.
         """
         try:
-            with self.__enter__():
-                with self.conn.cursor() as cur:
+            with ThreadPool() as conn:
+                with conn.cursor() as cur:
                     cur.execute(query, params)
-                    self.conn.commit()
+                    conn.commit()
             return True
         except psycopg2.pool.PoolError as e:
             print(f"Error getting connection from pool - {e}")
@@ -106,8 +117,11 @@ class DBConnectionManager:
             raise
         finally:
             # Ensure the cursor is always closed regardless of success/failure
-            if hasattr(self, 'conn') and getattr(self, 'conn', None) is not None:
-                cur.close()
+            try:
+                if 'cur' in locals() and cur is not None:
+                    cur.close()
+            except:
+                pass
 
     def single_select_query(self, query, params=None) -> Optional[Tuple]:
         """
@@ -122,11 +136,11 @@ class DBConnectionManager:
         """
 
         try:
-            with self.__enter__():
-                with self.conn.cursor() as cur:
+            with ThreadPool() as conn:
+                with conn.cursor() as cur:
                     cur.execute(query, params)
                     result = cur.fetchone()
-                    return result
+            return result
         except psycopg2.pool.PoolError as e:
             print(f"Error getting connection from pool - {e}")
         except psycopg2.Error as e:
@@ -137,10 +151,13 @@ class DBConnectionManager:
             raise
         finally:
             # Ensure the cursor is always closed regardless of success/failure
-            if hasattr(self, 'conn') and getattr(self, 'conn', None) is not None:
-                cur.close()
+            try:
+                if 'cur' in locals() and cur is not None:
+                    cur.close()
+            except:
+                pass
 
-    def select_query(self, query, params=None) -> List[Tuple]:
+    def select_query(self, query, params=None) -> Optional[List]:
         """
         Execute a SELECT query and return its result.
 
@@ -149,14 +166,14 @@ class DBConnectionManager:
             params (tuple|list, optional): Parameters to substitute into the query.
 
         Returns:
-            list[tuple]: Result set returned by the query execution.
+            list[tuple, optional]: Result set returned by the query execution.
         """
         try:
-            with self.__enter__():
-                with self.conn.cursor() as cur:
+            with ThreadPool() as conn:
+                with conn.cursor() as cur:
                     cur.execute(query, params)
                     result = cur.fetchall()
-                    return result
+            return result
         except psycopg2.pool.PoolError as e:
             print(f"Error getting connection from pool - {e}")
         except psycopg2.Error as e:
@@ -167,8 +184,11 @@ class DBConnectionManager:
             raise
         finally:
             # Ensure the cursor is always closed regardless of success/failure
-            if hasattr(self, 'conn') and getattr(self, 'conn', None) is not None:
-                cur.close()
+            try:
+                if 'cur' in locals() and cur is not None:
+                    cur.close()
+            except:
+                pass
 
 
 class SQLMeta:
@@ -208,7 +228,7 @@ class SQLMeta:
         Returns:
             bool: True, if table exist, False, if NOT exist.
         """
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             with conn.cursor() as cur:
                 # Use sql.Literal instead of sql.Identifier since we're passing a literal value
                 query = sql.SQL("""
@@ -222,6 +242,7 @@ class SQLMeta:
                 cur.execute(query)
                 result = cur.fetchone()[0]
                 logger.debug(f"{self.__class__.__name__}: Checked existence of table '{table_name}': {result}")
+
         return bool(result)
 
     @handle_errors
@@ -236,7 +257,7 @@ class SQLMeta:
             bool: True if the operation succeeded, False otherwise.
         """
         try:
-            with self.db_mgr as conn:
+            with ThreadPool() as conn:
                 with conn.cursor() as cur:
                     # Exclusive lock the table before dropping
                     cur.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE;").format(sql.Literal(table_name)))
@@ -262,7 +283,7 @@ class SQLMeta:
             list: List of table names.
         """
 
-        with self.db_mgr as conn:
+        with ThreadPool() as conn:
             with conn.cursor() as cur:
                 query = sql.SQL("""
                     SELECT table_name 
