@@ -66,7 +66,7 @@ class ThreadPool:
 
 
 class DBConnectionManager:
-    def __init__(self, database=None, user=None, password=None, minconn=1, maxconn=10, host='localhost'):
+    def __init__(self, database=None, user=None, password=None, host='localhost', port=5432, minconn=1, maxconn=10):
         """
         Initializes the connection pool with provided configuration settings.
 
@@ -87,7 +87,8 @@ class DBConnectionManager:
                 password=password,
                 minconn=minconn,
                 maxconn=maxconn,
-                host=host
+                host=host,
+                port=port
             )
         else:
             self.pool = _pool
