@@ -13,7 +13,7 @@ async def get_async_datafetcher(cache_obj: Optional[FetcherCacheManager] = None,
                              database=ConfigPostgreSQL.DATABASE,
                              user=ConfigPostgreSQL.USER,
                              password=ConfigPostgreSQL.PASSWORD,
-                             port=5432,
+                             port=port,
                              min_size=min_size,
                              max_size=max_size
                              )
