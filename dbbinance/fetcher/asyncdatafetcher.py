@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 
 import asyncpg
@@ -24,7 +25,8 @@ from collections import OrderedDict
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
-from apscheduler.schedulers.background import BackgroundScheduler
+# from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
@@ -111,9 +113,12 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             ", ".join("{} {}".format(col, data_type) for col, data_type in columns_definition)
         )
 
+        await self.asyncdb_mgr.modify_query(query)
+
         # Execute the constructed query asynchronously
-        async with AsyncPool(self.pool) as conn:
-            await conn.execute(query)
+        #
+        # async with AsyncPool(self.pool) as conn:
+        #     await conn.execute(query)
 
         logger.debug(f"{self.__class__.__name__}: Created table '{table_name}'")
 
@@ -141,35 +146,41 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
          """.format(table=table_name)
 
         # Execute the query with tuple of values
-        async with AsyncPool(self.pool) as conn:
-            await conn.execute(query, open_time, open_price, high_price, low_price, close_price, volume,
-                               close_time, quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored)
+        await self.asyncdb_mgr.modify_query(query, (open_time, open_price, high_price, low_price, close_price, volume,
+                                                    close_time, quote_asset_volume, trades, taker_buy_base,
+                                                    taker_buy_quote, ignored))
 
-    async def insert_klines_to_table(self, table_name: str, klines: list):
+    async def insert_klines_to_table(self, table_name: str, klines):
         """
-       Insert a K-line records into the specified table.
+        Insert K-line records into the specified table using asyncpg.
 
-       Args:
-           table_name   (str): Name of the target table.
-           klines       (list): Array of values representing the K-line data.
+        Args:
+            table_name (str): Name of the target table.
+            klines (list): Array of values representing the K-line data.
 
-       Returns:
-           None
+        Returns:
+            int: Number of klines successfully inserted
         """
+        if not klines:
+            return 0
 
-        query = """
-             INSERT INTO {table} (open_time, open, high, low, close, volume, close_time, 
-             quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
-          """.format(table=table_name)
-        async with AsyncPool(self.pool) as conn:
-            await conn.execute("BEGIN;")  # Begin transaction
+        query = f"INSERT INTO {table_name} (open_time, open, high, low, close, volume, close_time, " \
+                f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
 
-            # Exclusive lock the table before inserting
-            await conn.execute("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE;".format(table_name))
+        try:
+            async with self.pool.acquire() as conn:
+                # Begin transaction
+                async with conn.transaction():
+                    # Execute the batch insert and get the number of affected rows
+                    _ = await conn.executemany(query, klines)
+                    # Note: executemany doesn't return row count in asyncpg
+                    # We'll return the number of klines processed
+                    return len(klines)
 
-            # Execute many query to insert multiple rows at once
-            await conn.executemany(query, klines)
+        except Exception as e:
+            logger.error(f"Error inserting klines into {table_name}: {str(e)}")
+            raise
 
     def logger_debug(self, msg):
         if self.max_verbose:
@@ -277,7 +288,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             );
         """.format(table=table_name)
 
-        if not await self.asyncdb_mgr.modify_query(query):
+        if not (await self.asyncdb_mgr.modify_query(query)):
             logger.warning(f"{self.__class__.__name__}: Can't drop duplicates:")
 
 
@@ -657,7 +668,7 @@ class AsyncDataUpdaterMeta(AsyncPostgreSQLDatabase):
                                  'number_of_trades': 'sum', 'taker_buy_base_asset_volume': 'sum',
                                  'taker_buy_quote_asset_volume': 'sum'}
 
-        self.back_scheduler = None
+        self.async_scheduler = None
         self.last_timeframe_datetime = None
 
     async def prepare_start_end(self,
@@ -699,38 +710,42 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
     def __init__(self, pool, binance_api_key, binance_api_secret,
                  symbol_pairs=None, timeframes=None):
         super().__init__(pool, binance_api_key, binance_api_secret, symbol_pairs, timeframes)
+        self.loop = asyncio.get_running_loop()
+        # 1. Create a Future tied to the current running loop
+        self.notification_future = self.loop.create_future()
 
     async def check_first_run(self):
         """ Check if this a first run """
-        msg = f"{self.__class__.__name__} #{self.idnum}: Checking the 1st run"
-        logger.info(msg)
+        logger.info(f"{self.__class__.__name__} #{self.idnum}: Checking the 1st run")
         for base_table_name in self.base_tables_names:
             for symbol_pair in self.symbol_pairs:
                 for timeframe in self.timeframes:
                     table_name = f"{base_table_name}_{symbol_pair}_{timeframe}".lower()
+                    # 1. Check if table exists
                     if not await self.is_table_exists(table_name):
-                        msg = f"{self.__class__.__name__} #{self.idnum}: The table '{table_name}' is not exists. " \
-                              f"Creating new table '{table_name}'"
-                        logger.info(msg)
+                        logger.info(f"{self.__class__.__name__} #{self.idnum}: Creating table '{table_name}'")
                         await self.create_table(table_name)
                         await self.is_duplicates_exists(table_name)
+
+                        # 2. WAIT for data fetching to finish before next line
+                        # Since fetch_historical_spot_data is async def, await it directly.
                         await self.fetch_historical_spot_data(base_table_name, symbol_pair, timeframe)
+
                         await self.check_and_repair(table_name, symbol_pair, timeframe)
                         continue
+
+                    # 3. Check if data exists
+                    if not await self.is_data_exists(table_name):
+                        logger.info(f"{self.__class__.__name__} #{self.idnum}: Data empty. Fetching...")
+
+                        # WAIT for results here
+                        await self.fetch_historical_spot_data(base_table_name, symbol_pair, timeframe)
+
+                        await self.check_and_repair(table_name, symbol_pair, timeframe)
                     else:
-                        if not await self.is_data_exists(table_name):
-                            msg = f"{self.__class__.__name__} #{self.idnum}:The table '{table_name}' is present. " \
-                                  f"But data is empty. Fetching data for symbol pair: {symbol_pair}"
-                            logger.info(msg)
-                            await self.fetch_historical_spot_data(base_table_name, symbol_pair, timeframe)
-                            await self.check_and_repair(table_name, symbol_pair, timeframe)
-                            continue
-                        else:
-                            msg = f"{self.__class__.__name__} #{self.idnum}: Updating database to " \
-                                  f"actual {symbol_pair}, {timeframe}"
-                            logger.debug(msg)
-                            await self.check_and_repair(table_name, symbol_pair, timeframe)
-                            await self.update_spot_data()
+                        logger.debug(f"{self.__class__.__name__} #{self.idnum}: Updating {symbol_pair}")
+                        await self.check_and_repair(table_name, symbol_pair, timeframe)
+                        await self.update_spot_data()
 
     async def fetch_historical_spot_data(self, base_table_name, symbol_pair, timeframe):
         table_name = f"{base_table_name}_{symbol_pair}_{timeframe}".lower()
@@ -755,10 +770,10 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Start saving historical data to database for "
                      f"{symbol_pair}, {timeframe} at: {start_time}")
 
-        await self.insert_klines_to_table(table_name, klines)
+        result = await self.insert_klines_to_table(table_name, klines)
 
         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Finished saving historical data to database for "
-                     f"{symbol_pair}, {timeframe} at: {datetime.datetime.now(timezone.utc)}. "
+                     f"{symbol_pair}, {timeframe} at: {datetime.datetime.now(timezone.utc)}. Written qty: {result} "
                      f"ETA: {datetime.datetime.now(timezone.utc) - start_time}")
 
     @staticmethod
@@ -808,11 +823,11 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                         if klines:
                             self.last_timeframe_datetime = datetime.datetime.fromtimestamp(
                                 klines[-1][0] / 1000, tz=pytz.utc)
+                            result = await self.insert_klines_to_table(table_name, klines)
                             logger.info(
                                 f"{self.__class__.__name__} #{self.idnum}: Updater - {table_name} - "
-                                f"timeframes: {len(klines)}. Last timeframe: {self.last_timeframe_datetime}")
-                            await self.insert_klines_to_table(table_name, klines)
-
+                                f"Written timeframes: {result}/{len(klines)}. "
+                                f"Last timeframe: {self.last_timeframe_datetime}")
                         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Updating '{table_name}' finished...")
                     # for kline in klines:
                     #     self.insert_kline_to_table(table_name, kline)
@@ -893,48 +908,53 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
             logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
                          f"'{table_name}' - Start saving repaired data back to database: {start_time}")
             data_df = data_df.drop(columns="id")
-            await self.insert_klines_to_table(table_name, data_df.as_list())
-            logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
-                         f"'{table_name}' - data saved. ETA: {datetime.datetime.now(timezone.utc) - start_time}")
+            result = await self.insert_klines_to_table(table_name, data_df.as_list())
+            logger.debug(f"{self.__class__.__name__} #{self.idnum}:'{table_name}' - data saved. "
+                         f"Written qty: {result}. ETA: {datetime.datetime.now(timezone.utc) - start_time}")
         else:
             logger.info(f"{self.__class__.__name__} #{self.idnum}: "
                         f"'{table_name}' - Database already repaired. Don't need any action.")
 
-    def start_background_updater(self,
-                                 update_interval: int = 1,  # in minutes
-                                 ):
-        # Create a new background scheduler
+    async def start_background_updater(self,
+                                       sleep_time: int = 60,  # in seconds
+                                       ):
+        # Create a new async scheduler
+        update_interval = int(sleep_time // 60)  # in minutes
+
         if not AsyncDataUpdater.updater_is_running:
-            self.back_scheduler = BackgroundScheduler()
+            self.async_scheduler = AsyncIOScheduler()
+
+            print('Press Ctrl+{0} to exit'.format('Break' if os.name == 'nt' else 'C'))
 
             """ if updater is not running, check and repair database before we run updater """
-            self.check_first_run()
+            await self.check_first_run()
 
-            back_start_time = ceil_time(datetime.datetime.now(), "1m")
+            back_start_time = ceil_time(datetime.datetime.now(), "1m").replace(second=2, microsecond=0)
+            print('Updater will start at', back_start_time)
             # Add a new job to the scheduler to run the update_database method every minute
-            self.back_scheduler.add_job(self.update_spot_data,
-                                        'interval',
-                                        minutes=update_interval,
-                                        start_date=back_start_time,
-                                        )
-
-            # Start the scheduler
-            self.back_scheduler.start()
-            AsyncDataUpdater.updater_is_running = True
-
-    def test_background_updater(self, sleep_time: int = 60):
-
-        self.start_background_updater(update_interval=int(sleep_time // 60))
-
-        print('Press Ctrl+{0} to exit'.format('Break' if os.name == 'nt' else 'C'))
-        try:
-            # This is here to simulate application activity (which keeps the main thread alive).
-            while True:
-                time.sleep(sleep_time)
-        except (KeyboardInterrupt, SystemExit):
-            # Not strictly necessary if daemonic mode is enabled but should be done if possible
-            AsyncDataUpdater.updater_is_running = False
-            self.back_scheduler.shutdown()
+            self.async_scheduler.add_job(self.update_spot_data,
+                                         'interval',
+                                         minutes=update_interval,
+                                         next_run_time=back_start_time,
+                                         )
+            try:
+                # Start the scheduler
+                self.async_scheduler.start()
+                AsyncDataUpdater.updater_is_running = True
+                while True:
+                    try:
+                        await asyncio.sleep(sleep_time)
+                    except (KeyboardInterrupt, SystemExit) as e:
+                        raise e
+            except (KeyboardInterrupt, SystemExit):
+                print('Stopping updater...')
+                self.async_scheduler.shutdown()  # Shut down the scheduler on interruption
+                AsyncDataUpdater.updater_is_running = False
+            except Exception as e:
+                print(f'Unexpected error occurred: {e}')
+                self.async_scheduler.shutdown()
+                AsyncDataUpdater.updater_is_running = False
+                raise
 
 
 cache_manager_obj = FetcherCacheManager(max_memory_gb=2)

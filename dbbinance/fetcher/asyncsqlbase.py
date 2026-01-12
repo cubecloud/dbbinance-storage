@@ -23,17 +23,29 @@ class AsyncDBConnectionManager:
             raise f"Error: pool is not initialized"
         self.pool = pool
 
-    async def modify_query(self, query: str, params: Optional[Tuple] = None) -> bool:
+    async def modify_query(self, query: str, params: Optional[Tuple] = None, is_transaction: bool = True,
+                           timeout: Optional[int] = None) -> bool:
         """
         Execute a modifying query (CREATE, INSERT, UPDATE, DELETE) without fetching results.
 
         Args:
-            query (sql.SQL | str): SQL query to execute.
+            query (str): SQL query to execute.
             params (tuple|list, optional): Parameters to substitute into the query.
+            is_transaction (bool, optional): Enable transaction handling for multi-statement operations. Defaults to False.
+            timeout (int, optional): Optional timeout duration for transactions in seconds.
+
+        Returns:
+            bool: True if the operation succeeded.
         """
         try:
             async with AsyncPool(self.pool) as conn:
-                await conn.execute(query, *params if params else ())
+                if is_transaction:
+                    async with conn.transaction(timeout=timeout):
+                        # Execute multiple queries within a transaction
+                        await conn.execute(query, *params if params else ())
+                else:
+                    # Single query execution (auto-committed)
+                    await conn.execute(query, *params if params else ())
             return True
         except Exception as ex:
             logger.debug(f"{self.__class__.__name__}: Database error in modify_query: {ex}")
