@@ -242,7 +242,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         transposed_data = list(zip(*klines))
 
         try:
-            async with self.pool.acquire() as conn:
+            async with AsyncPool(self.pool) as conn:
                 # Execute the query and fetch the exact number of inserted rows
                 inserted_count = await conn.fetchval(sql, *transposed_data)
                 return inserted_count
