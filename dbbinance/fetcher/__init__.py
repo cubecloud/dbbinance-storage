@@ -10,6 +10,10 @@ from dbbinance.fetcher.datafetcher import PostgreSQLDatabase
 from dbbinance.fetcher.datafetcher import DataUpdater
 from dbbinance.fetcher.datafetcher import DataRepair
 from dbbinance.fetcher.sqlbase import SQLMeta
+from dbbinance.fetcher.asyncpool import AsyncPool
+from dbbinance.fetcher.asyncpool import create_global_pool
+from dbbinance.fetcher.asyncpool import create_pool
+from dbbinance.fetcher.asyncsqlbase import AsyncSQLMeta
 from dbbinance.fetcher.sqlbase import ThreadPool
 from dbbinance.fetcher.sqlbase import handle_errors
 from dbbinance.fetcher.datautils import *

@@ -3,7 +3,7 @@ import logging
 from secureapikey import Secure
 from dbbinance.config.dockerized import validate_ip
 
-__version__ = 0.012
+__version__ = 0.013
 
 logger = logging.getLogger()
 
@@ -41,7 +41,8 @@ class ConfigPostgreSQL:
             logger.info(f"ConfigPostgreSQL: Using specified HOST IP: {cls.HOST}")
         elif potential_host:
 
-            logger.warning(f"ConfigPostgreSQL: HOST IP specified: {potential_host}, not validated as IP. Please check it.")
+            logger.warning(f"ConfigPostgreSQL: HOST IP specified: {potential_host}, "
+                           f"not validated as IP. Please check it.")
             cls.HOST = potential_host
         else:
             cls.HOST = "localhost"

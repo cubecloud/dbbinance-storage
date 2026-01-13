@@ -35,4 +35,4 @@ ENV PYTHONUNBUFFERED=1
 
 # Start updater
 
-CMD ["bash", "-c", "while true; do python -u start.py || sleep 10; done"]
+CMD ["bash", "-c", "while true; do python -u async_start.py || sleep 10; done"]
