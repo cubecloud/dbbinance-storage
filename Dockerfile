@@ -19,15 +19,21 @@ RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -
 
 ENV PATH="/opt/conda/bin:${PATH}"
 
-# File with env name.yml
-COPY ${env_file} /
-COPY async_start.py /
+RUN conda config --add channels conda-forge && \
+    conda config --set channel_priority strict && \
+    conda update --all --override-channels -c conda-forge --yes && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
+    conda install mamba --yes
 
-RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
-RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+RUN cd / && git clone  https://$TOKEN@github.com/cubecloud/dbbinance-storage.git && \
+    cd /dbbinance-storage && \
+    git checkout main
+
+WORKDIR /dbbinance-storage
 
 # Create conda env with Python 3.9 cos we have 3.10 by default in ubuntu 22.04
-RUN conda env create -y -f /${env_file} && \
+RUN conda env create -y -f ${env_file} && \
     conda clean --all && \
     echo "source activate $conda_env" > ~/.bashrc
 
@@ -37,5 +43,4 @@ ENV PATH="/opt/conda/envs/${conda_env}/bin:${PATH}"
 ENV PYTHONUNBUFFERED=1
 
 # Start updater
-
-CMD ["bash", "-c", "while true; do python -u async_start.py || sleep 10; done"]
+CMD ["bash", "-c", "./start.sh"]
