@@ -1,4 +1,4 @@
-asyncpg<=0.31.0
+asyncpg<=0.30.0
 numpy>=1.23.3,<2.0.0
 pandas>=1.1.5,<2.0.0
 python-binance==1.0.19
