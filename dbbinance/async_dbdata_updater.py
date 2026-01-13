@@ -38,5 +38,5 @@ if __name__ == "__main__":
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    logging.getLogger('apscheduler').setLevel(logging.DEBUG)
+    logging.getLogger('apscheduler').setLevel(logging.INFO)
     asyncio.run(main())

@@ -150,36 +150,105 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
                                                     close_time, quote_asset_volume, trades, taker_buy_base,
                                                     taker_buy_quote, ignored))
 
-    async def insert_klines_to_table(self, table_name: str, klines):
+    # async def insert_klines_to_table(self, table_name: str, klines):
+    #     """
+    #     Insert K-line records into the specified table using asyncpg.
+    #
+    #     Args:
+    #         table_name (str): Name of the target table.
+    #         klines (list): Array of values representing the K-line data.
+    #
+    #     Returns:
+    #         int: Number of klines successfully inserted
+    #     """
+    #     if not klines:
+    #         return 0
+    #
+    #     query = f"INSERT INTO {table_name} (open_time, open, high, low, close, volume, close_time, " \
+    #             f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
+    #             f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
+    #
+    #     try:
+    #         async with self.pool.acquire() as conn:
+    #             # Begin transaction
+    #             async with conn.transaction():
+    #                 # Execute the batch insert and get the number of affected rows
+    #                 _ = await conn.executemany(query, klines)
+    #                 # Note: executemany doesn't return row count in asyncpg
+    #                 # We'll return the number of klines processed
+    #                 return len(klines)
+    #
+    #     except Exception as e:
+    #         logger.error(f"Error inserting klines into {table_name}: {str(e)}")
+    #         raise
+
+    async def insert_klines_to_table(self, table_name: str, klines: List[Tuple]):
         """
-        Insert K-line records into the specified table using asyncpg.
+        Massively inserts K-line records into a specific table while accurately counting the number of inserted rows.
 
         Args:
-            table_name (str): Name of the target table.
-            klines (list): Array of values representing the K-line data.
+            table_name (str): Target database table to insert data into.
+            klines (List[Tuple]): List of tuples containing K-line data.
 
         Returns:
-            int: Number of klines successfully inserted
+            int: Actual number of klines successfully inserted.
         """
-        if not klines:
+        if not klines or len(klines) == 0:
             return 0
 
-        query = f"INSERT INTO {table_name} (open_time, open, high, low, close, volume, close_time, " \
-                f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
-                f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
+        # Mapping of column names to their corresponding PostgreSQL array types
+        types_map = {
+            "open_time": "BIGINT[]",
+            "open": "NUMERIC[]",
+            "high": "NUMERIC[]",
+            "low": "NUMERIC[]",
+            "close": "NUMERIC[]",
+            "volume": "NUMERIC[]",
+            "close_time": "BIGINT[]",
+            "quote_asset_volume": "NUMERIC[]",
+            "trades": "INTEGER[]",
+            "taker_buy_base": "NUMERIC[]",
+            "taker_buy_quote": "NUMERIC[]",
+            "ignored": "NUMERIC[]"
+        }
+
+        # Column names matching the schema of the target table
+        columns = ["open_time", "open", "high", "low", "close", "volume",
+                   "close_time", "quote_asset_volume", "trades", "taker_buy_base",
+                   "taker_buy_quote", "ignored"]
+
+        # Building the part of the SQL query responsible for converting arrays into rows
+        arrays_query_part = ", ".join([
+            f"unnest(${i+1}::{types_map[col]}) AS {col}" for i, col in enumerate(columns)
+        ])
+
+        # Main SQL query utilizing CTE and RETURNING clause to ensure accurate row counts
+        sql = f"""
+        WITH input_data AS (
+            SELECT {arrays_query_part}
+        ),
+        inserted_data AS (
+            INSERT INTO {table_name}(open_time, open, high, low, close, volume, close_time,
+                                     quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored)
+            SELECT *
+            FROM input_data
+            ON CONFLICT DO NOTHING
+            RETURNING *
+        )
+        SELECT COUNT(*) FROM inserted_data;
+        """
+
+        # Efficiently transform the list of tuples into lists suitable for SQL parameters using zip()
+        transposed_data = list(zip(*klines))
 
         try:
             async with self.pool.acquire() as conn:
-                # Begin transaction
-                async with conn.transaction():
-                    # Execute the batch insert and get the number of affected rows
-                    _ = await conn.executemany(query, klines)
-                    # Note: executemany doesn't return row count in asyncpg
-                    # We'll return the number of klines processed
-                    return len(klines)
+                # Execute the query and fetch the exact number of inserted rows
+                inserted_count = await conn.fetchval(sql, *transposed_data)
+                return inserted_count
 
         except Exception as e:
-            logger.error(f"Error inserting klines into {table_name}: {str(e)}")
+            logger.error(f"{self.__class__.__name__}: Error inserting klines into {table_name}: {str(e)}")
             raise
 
     def logger_debug(self, msg):
