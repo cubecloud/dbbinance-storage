@@ -21,7 +21,10 @@ ENV PATH="/opt/conda/bin:${PATH}"
 
 # File with env name.yml
 COPY ${env_file} /
-COPY start.py /
+COPY async_start.py /
+
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 
 # Create conda env with Python 3.9 cos we have 3.10 by default in ubuntu 22.04
 RUN conda env create -y -f /${env_file} && \
