@@ -7,7 +7,7 @@ from psycopg2.pool import ThreadedConnectionPool
 from psycopg2 import sql
 from collections import OrderedDict
 
-__version__ = 0.017
+__version__ = 0.019
 
 logger = logging.getLogger()
 

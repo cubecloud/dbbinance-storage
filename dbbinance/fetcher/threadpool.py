@@ -3,7 +3,7 @@ import psycopg2
 from typing import Optional, Any
 from psycopg2.pool import ThreadedConnectionPool
 
-_pool: Optional[ThreadedConnectionPool] = None
+__version__ = 0.017
 
 
 def create_pool(database=None, user=None, password=None, host='localhost', port=5432, minconn=1,
