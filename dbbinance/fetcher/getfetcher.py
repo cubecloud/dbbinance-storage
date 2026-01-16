@@ -3,7 +3,7 @@ from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.fetcher.datafetcher import DataFetcher
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 
-__version__ = 0.003
+__version__ = 0.005
 
 
 def get_datafetcher(host=ConfigPostgreSQL.HOST,

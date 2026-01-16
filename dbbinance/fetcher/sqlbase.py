@@ -1,11 +1,13 @@
 import logging
 import psycopg2
-from typing import List, Tuple, Optional, Any
+from typing import List, Tuple, Optional
+from dbbinance.fetcher.threadpool import ThreadPool
+from dbbinance.fetcher.threadpool import create_pool
+from psycopg2.pool import ThreadedConnectionPool
 from psycopg2 import sql
-from psycopg2.pool import SimpleConnectionPool, ThreadedConnectionPool
 from collections import OrderedDict
 
-__version__ = 0.014
+__version__ = 0.019
 
 logger = logging.getLogger()
 
@@ -21,52 +23,8 @@ def handle_errors(func):
     return wrapper
 
 
-_pool: Optional[ThreadedConnectionPool] = None
-
-
-class ThreadPool:
-    """Class managing database connections through a connection pool."""
-
-    def __init__(self, pool: Optional[ThreadedConnectionPool] = None):
-        # Create a new connection pool instance
-        if pool is None:
-            self.pool = _pool
-        else:
-            self.pool = pool
-        self.conn = None
-
-    def __enter__(self):
-        """
-        Enter the runtime context related to this object.
-        Acquires a connection from the pool when entering a `with` block.
-
-        Returns:
-          A connection object retrieved from the pool.
-        """
-        self.conn = self.pool.getconn()
-        return self.conn
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """
-        Exit the runtime context related to this object.
-        Releases the connection back into the pool when leaving a `with` block.
-        Propagates any unhandled exceptions up the call stack.
-
-        Args:
-          exc_type (type): Type of the exception raised (or None if no exception was raised).
-          exc_val (Exception): Value of the exception raised (or None if no exception was raised).
-          exc_tb (traceback): Traceback information about the exception (or None if no exception was raised).
-        """
-        if self.conn is not None:
-            self.pool.putconn(self.conn)
-
-        # Re-raise any exception that may have been caught inside the context block
-        if exc_type is not None:
-            raise exc_val.with_traceback(exc_tb)
-
-
 class DBConnectionManager:
-    def __init__(self, database=None, user=None, password=None, host='localhost', port=5432, minconn=1, maxconn=10):
+    def __init__(self, database=None, user=None, password=None, host='localhost', port=5432, minconn=1, maxconn=15):
         """
         Initializes the connection pool with provided configuration settings.
 
@@ -79,22 +37,17 @@ class DBConnectionManager:
             host (str): Address of the database server (default is localhost).
         """
         # Create a new connection pool instance
-        global _pool
-        if _pool is None:
-            _pool = ThreadedConnectionPool(
-                dbname=database,
-                user=user,
-                password=password,
-                minconn=minconn,
-                maxconn=maxconn,
-                host=host,
-                port=port
-            )
-        else:
-            self.pool = _pool
-        self.conn = None
+        self.pool = create_pool(
+            database=database,
+            user=user,
+            password=password,
+            minconn=minconn,
+            maxconn=maxconn,
+            host=host,
+            port=port
+        )
 
-    def modify_query(self, query, params=None) -> bool:
+    def modify_query(self, query, params=None) -> Optional[bool]:
         """
         Execute a modifying query (CREATE, INSERT, UPDATE, DELETE) without fetching results.
 
@@ -103,7 +56,7 @@ class DBConnectionManager:
             params (tuple|list, optional): Parameters to substitute into the query.
         """
         try:
-            with ThreadPool() as conn:
+            with ThreadPool(self.pool) as conn:
                 with conn.cursor() as cur:
                     cur.execute(query, params)
                     conn.commit()
@@ -137,7 +90,7 @@ class DBConnectionManager:
         """
 
         try:
-            with ThreadPool() as conn:
+            with ThreadPool(self.pool) as conn:
                 with conn.cursor() as cur:
                     cur.execute(query, params)
                     result = cur.fetchone()
@@ -170,7 +123,7 @@ class DBConnectionManager:
             list[tuple, optional]: Result set returned by the query execution.
         """
         try:
-            with ThreadPool() as conn:
+            with ThreadPool(self.pool) as conn:
                 with conn.cursor() as cur:
                     cur.execute(query, params)
                     result = cur.fetchall()
@@ -191,11 +144,29 @@ class DBConnectionManager:
             except:
                 pass
 
+    def set_transaction_read_only(self, read_only: bool = False):
+        """Set transaction to read-write mode."""
+        with ThreadPool(self.pool) as conn:
+            with conn.cursor() as cur:
+                if read_only:
+                    cur.execute("SET default_transaction_read_only TO on;")
+                else:
+                    cur.execute("SET default_transaction_read_only TO off;")
+            conn.commit()
+
+    def is_transaction_read_only(self) -> bool:
+        """Check if transaction is in read-only mode."""
+        with ThreadPool(self.pool) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SHOW default_transaction_read_only;")
+                result = cur.fetchone()
+        return result[0] == 'on'
+
 
 class SQLMeta:
     count = 0
 
-    def __init__(self, host, database, user, password, minconn=1, maxconn=10):
+    def __init__(self, host, database, user, password, port=5432, minconn=1, maxconn=10):
         SQLMeta.count += 1
         self.idnum = int(SQLMeta.count)
         self.host = host
@@ -209,7 +180,7 @@ class SQLMeta:
                                           password=password,
                                           minconn=1,
                                           maxconn=maxconn)
-
+        self.pool = self.db_mgr.pool
         self.__connections = OrderedDict()  # Will be Deprecated in future
 
         """ Get external data with logger """
@@ -229,7 +200,8 @@ class SQLMeta:
         Returns:
             bool: True, if table exist, False, if NOT exist.
         """
-        with ThreadPool() as conn:
+
+        with ThreadPool(self.pool) as conn:
             with conn.cursor() as cur:
                 # Use sql.Literal instead of sql.Identifier since we're passing a literal value
                 query = sql.SQL("""
@@ -243,7 +215,6 @@ class SQLMeta:
                 cur.execute(query)
                 result = cur.fetchone()[0]
                 logger.debug(f"{self.__class__.__name__}: Checked existence of table '{table_name}': {result}")
-
         return bool(result)
 
     @handle_errors
@@ -258,7 +229,7 @@ class SQLMeta:
             bool: True if the operation succeeded, False otherwise.
         """
         try:
-            with ThreadPool() as conn:
+            with ThreadPool(self.pool) as conn:
                 with conn.cursor() as cur:
                     # Exclusive lock the table before dropping
                     cur.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE;").format(sql.Literal(table_name)))
@@ -284,7 +255,7 @@ class SQLMeta:
             list: List of table names.
         """
 
-        with ThreadPool() as conn:
+        with ThreadPool(self.pool) as conn:
             with conn.cursor() as cur:
                 query = sql.SQL("""
                     SELECT table_name 

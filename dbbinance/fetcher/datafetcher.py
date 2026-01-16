@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.74
+__version__ = 0.78
 
 logger = logging.getLogger()
 
@@ -108,12 +108,15 @@ class PostgreSQLDatabase(SQLMeta):
                                 columns_definition])
         )
 
-        # Execute the constructed query
-        with ThreadPool() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query)
-            conn.commit()
-        logger.debug(f"{self.__class__.__name__}: Created table '{table_name}'")
+        if self.db_mgr.modify_query(query):
+            logger.debug(f"{self.__class__.__name__}: Created table '{table_name}'")
+        else:
+            logger.error(f"{self.__class__.__name__}: Error in creating table '{table_name}'")
+        # # Execute the constructed query
+        # with ThreadPool(self.pool) as conn:
+        #     with conn.cursor() as cur:
+        #         cur.execute(query)
+        #     conn.commit()
 
     def insert_kline_to_table(self, table_name, kline):
         """
@@ -156,7 +159,7 @@ class PostgreSQLDatabase(SQLMeta):
                 f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
                 f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 
-        with ThreadPool() as conn:
+        with ThreadPool(self.pool) as conn:
             with conn.cursor() as cur:
                 cur.execute("BEGIN;")
                 # Exclusive lock the table before inserting
@@ -172,7 +175,7 @@ class PostgreSQLDatabase(SQLMeta):
     def get_min_open_time(self, table_name, retry=10) -> int:
         self.logger_debug(
             f"{self.__class__.__name__}: get_min_open_time called with table_name={table_name} and retry={retry}")
-        with ThreadPool() as conn:
+        with ThreadPool(self.pool) as conn:
             try:
                 with conn.cursor() as cur:
                     query = f"SELECT MIN(open_time) FROM {table_name}"
@@ -206,7 +209,7 @@ class PostgreSQLDatabase(SQLMeta):
     def get_max_open_time(self, table_name, retry=10) -> int:
         self.logger_debug(
             f"{self.__class__.__name__}:get_max_open_time called with table_name={table_name} and retry={retry}")
-        with ThreadPool() as conn:
+        with ThreadPool(self.pool) as conn:
             try:
                 with conn.cursor() as cur:
                     query = f"SELECT MAX(open_time) FROM {table_name}"
@@ -982,8 +985,8 @@ class DataFetcher(DataUpdaterMeta):
                 end_ts=sql.Literal(end_timestamp)
             )
 
-            with ThreadPool() as conn:
-                conn.set_session(readonly=True, autocommit=True)
+            with ThreadPool(self.pool) as conn:
+                # conn.set_session(readonly=True, autocommit=True)
                 with conn.cursor() as cur:
                     cur.execute(query)
                     raw_data = cur.fetchall()
@@ -1079,6 +1082,7 @@ class DataFetcher(DataUpdaterMeta):
 
 if __name__ == "__main__":
     from dbbinance.config.configpostgresql import ConfigPostgreSQL
+    from dbbinance.config.configbinance import ConfigBinance
     from secureapikey.secureaes import Secure
 
     logger.setLevel(logging.DEBUG)
@@ -1100,21 +1104,21 @@ if __name__ == "__main__":
     """
 
     """ Decrypt binance api key and binance api secret """
-    secure_key = Secure()
-    _binance_api_key, _binance_api_secret = secure_key.get_key('BINANCE', use_env_salt=True)
+    # secure_key = Secure()
+    # _binance_api_key, _binance_api_secret = secure_key.get_key('BINANCE', use_env_salt=True)
 
     updater = DataUpdater(host=ConfigPostgreSQL.HOST,
                           database=ConfigPostgreSQL.DATABASE,
                           user=ConfigPostgreSQL.USER,
                           password=ConfigPostgreSQL.PASSWORD,
-                          binance_api_key=_binance_api_key,
-                          binance_api_secret=_binance_api_secret,
+                          binance_api_key=ConfigBinance.BINANCE_API_SECRET,
+                          binance_api_secret=ConfigBinance.BINANCE_API_SECRET,
                           )
     # updater.test_background_updater()
     updater.drop_duplicates_rows(table_name="spot_data_btcusdt_1m")
 
     """ Start testing get_data_as_df method """
-    start_datetime = datetime.datetime.strptime('01 Aug 2017', '%d %b %Y').replace(tzinfo=timezone.utc)
+    start_datetime = datetime.datetime.strptime('01 Aug 2017', '%d %b %Y').replace(tzinfo=pytz.utc)
     _data_df = updater.get_data_as_df(table_name="spot_data_btcusdt_1m",
                                       start=start_datetime,
                                       end=datetime.datetime.now(timezone.utc),
@@ -1143,7 +1147,7 @@ if __name__ == "__main__":
                           )
 
     print("\nResampling of same period and compare results with 'cached=True' option\n")
-    start_datetime = datetime.datetime.strptime('01 Aug 2018', '%d %b %Y').replace(tzinfo=timezone.utc)
+    start_datetime = datetime.datetime.strptime('01 Aug 2018', '%d %b %Y').replace(tzinfo=pytz.utc)
     """ we need a gap for testing """
     end_datetime = floor_time(datetime.datetime.now(timezone.utc) - datetime.timedelta(minutes=1))
     print(f'Start datetime - end datetime: {start_datetime} - {end_datetime}\n')
