@@ -14,7 +14,7 @@ from dbbinance.fetcher.asyncpool import AsyncPool
 from dbbinance.fetcher.asyncpool import create_global_pool
 from dbbinance.fetcher.asyncpool import create_pool
 from dbbinance.fetcher.asyncsqlbase import AsyncSQLMeta
-from dbbinance.fetcher.sqlbase import ThreadPool
+from dbbinance.fetcher.threadpool import ThreadPool
 from dbbinance.fetcher.sqlbase import handle_errors
 from dbbinance.fetcher.datautils import *
 from dbbinance.fetcher.singleton import Singleton

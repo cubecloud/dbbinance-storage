@@ -1149,7 +1149,7 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
         return data_df.copy(deep=True)
 
 
-async def main():
+async def main_tests():
     pool = await create_pool(host=ConfigPostgreSQL.HOST,
                              database=ConfigPostgreSQL.DATABASE,
                              user=ConfigPostgreSQL.USER,
@@ -1255,4 +1255,4 @@ if __name__ == "__main__":
     logger.addHandler(console_handler)
 
     logging.getLogger('apscheduler').setLevel(logging.DEBUG)
-    asyncio.run(main())
+    asyncio.run(main_tests())
