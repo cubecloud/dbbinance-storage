@@ -107,9 +107,6 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             float(quote_asset_volume), int(trades), float(taker_buy_base), float(taker_buy_quote), float(ignored)
         ))
 
-    from datetime import datetime, timezone
-    import numpy as np
-
     async def insert_klines_to_table(self, table_name: str, klines: list):
         """
         Bulk insert klines using UNNEST (fast path).
@@ -123,14 +120,12 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             arr = np.asarray(klines, dtype=object)
 
             # ---- timestamps (ms -> UTC datetime) ----
-            open_times = [
-                datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-                for ts in arr[:, 0]
-            ]
-            close_times = [
-                datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-                for ts in arr[:, 6]
-            ]
+            open_times = [datetime.datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                          for ts in arr[:, 0]
+                          ]
+            close_times = [datetime.datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+                           for ts in arr[:, 6]
+                           ]
 
             sql_query = f"""
             INSERT INTO {table_name} (
@@ -211,6 +206,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             logger.error(f"{self.__class__.__name__}: {e}")
         # fallback
         return int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
+
 
 class DataRepair:
     def __init__(self, client_cls: Client):
