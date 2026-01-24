@@ -811,7 +811,7 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
 
         _start_time = datetime.datetime.now(timezone.utc)
         if use_dtypes is None:
-            use_dtypes = Constants.sql_dtypes
+            use_dtypes = Constants.newsql_dtypes
 
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
 
