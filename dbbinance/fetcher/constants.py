@@ -78,6 +78,20 @@ class Constants:
                   'ignored': float,
                   }
 
+    newsql_cols: Tuple = ("open_time",
+                          "open",
+                          "high",
+                          "low",
+                          "close",
+                          "volume",
+                          "close_time",
+                          "quote_asset_volume",
+                          "trades",
+                          "taker_buy_base",
+                          "taker_buy_quote",
+                          "ignored"
+                          )
+
     newsql_dtypes = {'open_time': datetime.datetime,
                      'open': float,
                      'high': float,

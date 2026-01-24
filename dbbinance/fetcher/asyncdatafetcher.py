@@ -805,7 +805,7 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                              table_name: str,
                              start: Union[datetime.datetime, int],
                              end: Union[datetime.datetime, int],
-                             use_cols=Constants.sql_cols,
+                             use_cols=Constants.newsql_cols,
                              use_dtypes=None,
                              ) -> pd.DataFrame:
 
@@ -821,7 +821,7 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
             SELECT {cols_str} 
             FROM {table_name} 
             WHERE open_time BETWEEN $1 AND $2
-            ORDER BY open_time
+            ORDER BY open_time ASC
          """
 
         logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
@@ -846,7 +846,7 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
         status = await self.is_table_exists(table_name)
         return status
 
-    async def get_all_data_as_df(self, table_name, use_cols=Constants.sql_cols, use_dtypes=None) -> pd.DataFrame:
+    async def get_all_data_as_df(self, table_name, use_cols=Constants.newsql_cols, use_dtypes=None) -> pd.DataFrame:
         if use_dtypes is None:
             use_dtypes = Constants.newsql_dtypes
 
