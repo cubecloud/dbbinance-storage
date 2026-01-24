@@ -109,7 +109,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             # Process timestamps (ms -> datetime UTC) in one pass
             open_time = []
             close_time = []
-            for ts_open, ts_close in zip(arr[:, 0], arr[:, 6]):
+            for ts_open, ts_close in zip(arr[:, 0].tolist(), arr[:, 6].tolist()):
                 open_time.append(datetime.datetime.fromtimestamp(int(ts_open) / 1000, tz=timezone.utc))
                 close_time.append(datetime.datetime.fromtimestamp(int(ts_close) / 1000, tz=timezone.utc))
 
