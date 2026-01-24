@@ -848,7 +848,7 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
 
     async def get_all_data_as_df(self, table_name, use_cols=Constants.sql_cols, use_dtypes=None) -> pd.DataFrame:
         if use_dtypes is None:
-            use_dtypes = Constants.sql_dtypes
+            use_dtypes = Constants.newsql_dtypes
 
         start_open_time = await self.get_min_open_time(table_name)
         end_open_time = await self.get_max_open_time(table_name)
