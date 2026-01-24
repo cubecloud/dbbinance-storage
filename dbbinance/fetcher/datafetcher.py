@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.78
+__version__ = 0.81
 
 logger = logging.getLogger()
 
@@ -55,229 +55,195 @@ def floor_time(dt=None, floor_to='1h', tz=None) -> datetime.datetime:
 class PostgreSQLDatabase(SQLMeta):
     def __init__(self, host, database, user, password, max_conn=10):
         super().__init__(host, database, user, password, max_conn)
-        # self.conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_SERIALIZABLE)
         self.max_verbose = False
 
+    # ------------------------------------------------------------------
+    # Table naming
+    # ------------------------------------------------------------------
     @staticmethod
-    def prepare_table_name(market: str = None,
-                           symbol_pair: str = "BTCUSDT") -> str:
-        if market is None:
-            market = "spot"
-        base_table_name = f"{market}_data"
-        timeframe = "1m"
-        table_name = f"{base_table_name}_{symbol_pair}_{timeframe}".lower()
-        return table_name
+    def prepare_table_name(
+            market: str = "spot",
+            symbol_pair: str = "BTCUSDT",
+            timeframe: str = "1m",
+    ) -> str:
+        return f"{market}_data_{symbol_pair}_{timeframe}".lower()
 
+    # ------------------------------------------------------------------
+    # Table creation (optimized schema)
+    # ------------------------------------------------------------------
     @handle_errors
-    def is_data_exists(self, table_name):
-        _data = self.db_mgr.single_select_query(sql.SQL("SELECT * FROM {} LIMIT 1").format(sql.Identifier(table_name)))
-        if _data is None:
-            data_exists = False
-        else:
-            data_exists = True
-        return data_exists
-
-    @handle_errors
-    def create_table(self, table_name: str):
+    def create_table(self, table_name: str, use_brin: bool = True):
         """
-        Creates a new table in the database.
-
+        Creates a new optimized OHLCV table with indexes.
         Args:
-            table_name (str): Name of the table to create.
+            table_name (str): Target table name.
+            use_brin (bool): Whether to create a fresh BRIN index on open_time
         """
-        columns_definition = [
-            ("id", "SERIAL PRIMARY KEY"),
-            ("open_time", "BIGINT"),
-            ("open", "NUMERIC"),
-            ("high", "NUMERIC"),
-            ("low", "NUMERIC"),
-            ("close", "NUMERIC"),
-            ("volume", "NUMERIC"),
-            ("close_time", "BIGINT"),
-            ("quote_asset_volume", "NUMERIC"),
-            ("trades", "INTEGER"),
-            ("taker_buy_base", "NUMERIC"),
-            ("taker_buy_quote", "NUMERIC"),
-            ("ignored", "NUMERIC")
-        ]
+        # -----------------------------
+        # Create table
+        # -----------------------------
+        query = sql.SQL("""
+            CREATE TABLE IF NOT EXISTS {table} (
+                open_time TIMESTAMPTZ NOT NULL PRIMARY KEY,
 
-        # Build the CREATE TABLE query dynamically
-        query = sql.SQL("CREATE TABLE {} ({})").format(
-            sql.Identifier(table_name),
-            sql.SQL(", ").join([sql.SQL("{0} {1}").format(sql.Identifier(col), sql.SQL(data_type)) for col, data_type in
-                                columns_definition])
-        )
+                open   FLOAT8 NOT NULL,
+                high   FLOAT8 NOT NULL,
+                low    FLOAT8 NOT NULL,
+                close  FLOAT8 NOT NULL,
+                volume FLOAT8 NOT NULL,
 
-        if self.db_mgr.modify_query(query):
-            logger.debug(f"{self.__class__.__name__}: Created table '{table_name}'")
-        else:
-            logger.error(f"{self.__class__.__name__}: Error in creating table '{table_name}'")
-        # # Execute the constructed query
-        # with ThreadPool(self.pool) as conn:
-        #     with conn.cursor() as cur:
-        #         cur.execute(query)
-        #     conn.commit()
+                close_time TIMESTAMPTZ NOT NULL,
 
-    def insert_kline_to_table(self, table_name, kline):
-        """
-        Insert a K-line record into the specified table.
+                quote_asset_volume FLOAT8,
+                trades              INTEGER,
+                taker_buy_base      FLOAT8,
+                taker_buy_quote     FLOAT8,
+                ignored             FLOAT8
+            );
+        """).format(table=sql.Identifier(table_name))
 
-        Args:
-            table_name (str): Name of the target table.
-            kline (list): Array of values representing the K-line data.
-        """
-        # Unpack kline values
-        open_time, open_price, high_price, low_price, close_price, volume, close_time, \
+        if not self.db_mgr.modify_query(query):
+            raise RuntimeError(f"Failed to create table {table_name}")
+        logger.info(f"{self.__class__.__name__}: Table '{table_name}' ready")
+
+        # -----------------------------
+        # Drop old BRIN index if exists
+        # -----------------------------
+        if use_brin:
+            brin_idx_name = f"{table_name}_open_time_brin"
+
+            drop_query = sql.SQL("DROP INDEX IF EXISTS {idx}").format(
+                idx=sql.Identifier(brin_idx_name)
+            )
+            self.db_mgr.modify_query(drop_query)
+            logger.debug(f"{self.__class__.__name__}: Dropped old BRIN index '{brin_idx_name}' (if existed)")
+
+            # -----------------------------
+            # 3️⃣ Create fresh BRIN index
+            # -----------------------------
+            brin_query = sql.SQL("""
+                CREATE INDEX {idx}
+                ON {table}
+                USING BRIN (open_time);
+            """).format(
+                idx=sql.Identifier(brin_idx_name),
+                table=sql.Identifier(table_name)
+            )
+            if self.db_mgr.modify_query(brin_query):
+                logger.info(f"{self.__class__.__name__}: BRIN index on '{table_name}.open_time' created")
+            else:
+                logger.warning(f"{self.__class__.__name__}: Failed to create BRIN index on '{table_name}'")
+
+    # ------------------------------------------------------------------
+    # Single insert (safe, idempotent)
+    # ------------------------------------------------------------------
+    def insert_kline_to_table(self, table_name: str, kline: list):
+        open_time_ms, open_, high, low, close, volume, close_time_ms, \
             quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[:12]
 
-        # Correct way to reference table name using Identifier
+        row = (
+            datetime.datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc),
+            float(open_),
+            float(high),
+            float(low),
+            float(close),
+            float(volume),
+            datetime.datetime.fromtimestamp(close_time_ms / 1000, tz=timezone.utc),
+            float(quote_asset_volume),
+            int(trades),
+            float(taker_buy_base),
+            float(taker_buy_quote),
+            float(ignored),
+        )
+
         query = sql.SQL("""
             INSERT INTO {table} (
-                open_time, open, high, low, close, volume, close_time, 
-                quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-        """).format(
-            table=sql.Identifier(table_name)
-        )
-        # Execute the query with tuple of values
-        if not self.db_mgr.modify_query(query, (open_time, open_price, high_price, low_price, close_price, volume,
-                                                close_time, quote_asset_volume, trades, taker_buy_base, taker_buy_quote,
-                                                ignored)):
-            logger.debug(
-                f"{self.__class__.__name__} #{self.idnum}': kline {open_time} {open_price} {high_price}... not saved")
+                open_time, open, high, low, close, volume,
+                close_time, quote_asset_volume, trades,
+                taker_buy_base, taker_buy_quote, ignored
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (open_time) DO NOTHING;
+        """).format(table=sql.Identifier(table_name))
 
-    def insert_klines_to_table(self, table_name, klines):
-        """
-        Insert a K-line records into the specified table.
+        self.db_mgr.modify_query(query, row)
 
-        Args:
-            table_name (str): Name of the target table.
-            klines (list): Array of values representing the K-line data.
-        """
+    # ------------------------------------------------------------------
+    # Bulk insert (fast, no table locks)
+    # ------------------------------------------------------------------
+    def insert_klines_to_table(self, table_name: str, klines: list):
+        rows = [
+            (
+                datetime.datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
+                float(k[1]),
+                float(k[2]),
+                float(k[3]),
+                float(k[4]),
+                float(k[5]),
+                datetime.datetime.fromtimestamp(k[6] / 1000, tz=timezone.utc),
+                float(k[7]),
+                int(k[8]),
+                float(k[9]),
+                float(k[10]),
+                float(k[11]),
+            )
+            for k in klines
+        ]
 
-        query = f"INSERT INTO {table_name} (open_time, open, high, low, close, volume, close_time, " \
-                f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
-                f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        query = sql.SQL("""
+            INSERT INTO {table} (
+                open_time, open, high, low, close, volume,
+                close_time, quote_asset_volume, trades,
+                taker_buy_base, taker_buy_quote, ignored
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (open_time) DO NOTHING;
+        """).format(table=sql.Identifier(table_name))
 
         with ThreadPool(self.pool) as conn:
             with conn.cursor() as cur:
-                cur.execute("BEGIN;")
-                # Exclusive lock the table before inserting
-                cur.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE;").format(sql.Identifier(table_name)))
-                cur.executemany(query, klines)
+                cur.executemany(query, rows)
             conn.commit()
 
+    # ------------------------------------------------------------------
+    # Debug helper
+    # ------------------------------------------------------------------
     def logger_debug(self, msg):
         if self.max_verbose:
             logger.debug(msg)
 
+    # ------------------------------------------------------------------
+    # Min / Max open_time (fast using PK index)
+    # ------------------------------------------------------------------
     @handle_errors
-    def get_min_open_time(self, table_name, retry=10) -> int:
-        self.logger_debug(
-            f"{self.__class__.__name__}: get_min_open_time called with table_name={table_name} and retry={retry}")
-        with ThreadPool(self.pool) as conn:
-            try:
-                with conn.cursor() as cur:
-                    query = f"SELECT MIN(open_time) FROM {table_name}"
-                    self.logger_debug(f"{self.__class__.__name__}: Executing query: {query}")
-                    cur.execute(query)
-                    if cur.rowcount != 0:
-                        min_open_time = cur.fetchone()[0]
-                        self.logger_debug(f"{self.__class__.__name__}:Query returned min_open_time={min_open_time}")
-                    else:
-                        self.logger_debug(f"{self.__class__.__name__}: Query returned no rows")
-                        if retry > 0:
-                            self.logger_debug(f"{self.__class__.__name__}: Retrying with retry={retry - 1}")
-                            min_open_time = self.get_min_open_time(table_name, retry - 1)
-                        else:
-                            self.logger_debug(f"{self.__class__.__name__}: No more retries left")
-                            min_open_time = None
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
-                min_open_time = None
-
-        if (not min_open_time) or (min_open_time is None):
-            min_open_time = datetime.datetime.strptime('01 Jan 2017', '%d %b %Y')
-            min_open_time = int(datetime.datetime.timestamp(min_open_time) * 1000)
-            self.logger_debug(f"{self.__class__.__name__}: Returning default value: {min_open_time}")
-        else:
-            self.logger_debug(f"{self.__class__.__name__}: Returning min_open_time: {min_open_time}")
-        return min_open_time
+    def get_min_open_time(self, table_name: str) -> int:
+        query = sql.SQL("SELECT MIN(open_time) FROM {}").format(sql.Identifier(table_name))
+        result = self.db_mgr.single_select_query(query)
+        if result and result[0]:
+            return int(result[0].timestamp() * 1000)
+        default = datetime.datetime(2017, 1, 1, tzinfo=timezone.utc)
+        return int(default.timestamp() * 1000)
 
     @handle_errors
-    def get_max_open_time(self, table_name, retry=10) -> int:
-        self.logger_debug(
-            f"{self.__class__.__name__}:get_max_open_time called with table_name={table_name} and retry={retry}")
-        with ThreadPool(self.pool) as conn:
-            try:
-                with conn.cursor() as cur:
-                    query = f"SELECT MAX(open_time) FROM {table_name}"
-                    self.logger_debug(f"{self.__class__.__name__}: Executing query: {query}")
-                    cur.execute(query)
-                    if cur.rowcount != 0:
-                        max_open_time = cur.fetchone()[0]
-                        self.logger_debug(f"{self.__class__.__name__}: Query returned max_open_time={max_open_time}")
-                    else:
-                        self.logger_debug(f"{self.__class__.__name__}: Query returned no rows")
-                        if retry > 0:
-                            self.logger_debug(f"{self.__class__.__name__}: Retrying with retry={retry - 1}")
-                            max_open_time = self.get_max_open_time(table_name, retry - 1)
-                        else:
-                            self.logger_debug(f"{self.__class__.__name__}: No more retries left")
-                            max_open_time = None
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
-                max_open_time = None
-        if (not max_open_time) or (max_open_time is None):
-            max_open_time = datetime.datetime.now(timezone.utc)
-            max_open_time = int(datetime.datetime.timestamp(max_open_time) * 1000)
-            self.logger_debug(f"{self.__class__.__name__}: Returning current timestamp: {max_open_time}")
-        else:
-            self.logger_debug(f"{self.__class__.__name__}: Returning max_open_time: {max_open_time}")
-        return max_open_time
+    def get_max_open_time(self, table_name: str) -> int:
+        query = sql.SQL("SELECT MAX(open_time) FROM {}").format(sql.Identifier(table_name))
+        result = self.db_mgr.single_select_query(query)
+        if result and result[0]:
+            return int(result[0].timestamp() * 1000)
+        now = datetime.datetime.now(timezone.utc)
+        return int(now.timestamp() * 1000)
 
+    # ------------------------------------------------------------------
+    # Check if table has any data
+    # ------------------------------------------------------------------
     @handle_errors
-    def is_duplicates_exists(self, table_name, show=True) -> bool:
-        query = sql.SQL("""
-            SELECT open_time, COUNT(*)
-            FROM {table}
-            GROUP BY open_time
-            HAVING COUNT(*) > 1;
-        """).format(
-            table=sql.Identifier(table_name)
-        )
-
-        duplicates = self.db_mgr.select_query(query)
-        status = False
-        if duplicates:
-            status = True
-            if show:
-                logger.warning(f"{self.__class__.__name__}: Duplicates:")
-                for row in duplicates:
-                    logger.warning(f"{self.__class__.__name__}: {row}")
-        return status
-
-    @handle_errors
-    def drop_duplicates_rows(self, table_name):
-        query = sql.SQL("""
-            DELETE FROM {table}
-            WHERE id IN (
-                SELECT id
-                FROM (
-                    SELECT id,
-                           ROW_NUMBER() OVER(PARTITION BY open_time ORDER BY id) AS row_num
-                    FROM {table}
-                ) t
-                WHERE t.row_num > 1
-            );
-        """).format(
-            table=sql.Identifier(table_name)
-        )
-
-        if not self.db_mgr.modify_query(query):
-            logger.warning(f"{self.__class__.__name__}: Can't drop duplicates:")
+    def is_data_exists(self, table_name: str) -> bool:
+        """
+        Returns True if the table exists and has at least one row.
+        """
+        query = sql.SQL("SELECT 1 FROM {} LIMIT 1").format(sql.Identifier(table_name))
+        result = self.db_mgr.single_select_query(query)
+        return result is not None
 
 
 class DataRepair:
@@ -395,10 +361,10 @@ class DataRepair:
         """ Convert _datetime_ of 'open_time' to timestamp format """
         data_df["open_time"] = self.convert_datetime_to_timestamp(data_df["open_time"])
         self.ts_start_end_open_time_after = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
-        logger.debug(
-            f"{self.__class__.__name__}: Start/end timestamp of 'open_time' before: {self.ts_start_end_open_time_before}")
-        logger.debug(
-            f"{self.__class__.__name__}: Start/end timestamp of 'open_time' after: {self.ts_start_end_open_time_after}")
+        logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' before: "
+                     f"{self.ts_start_end_open_time_before}")
+        logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' after: "
+                     f"{self.ts_start_end_open_time_after}")
 
         """ Create new close_time and ad it to data_df """
         frequency = convert_timeframe_to_freq(timeframe)
@@ -481,8 +447,8 @@ class DataRepair:
             if data_df.isnull().values.any():
                 logger.debug(f"{self.__class__.__name__}: Null values founded. Repairing data...")
                 total_timeframes = sum([window_data[2] for window_data in self.timeframes_windows])
-                logger.info(
-                    f"{self.__class__.__name__}: Total missed data windows/timeframes: {len(self.timeframes_windows)}/{total_timeframes}")
+                logger.info(f"{self.__class__.__name__}: Total missed data windows/timeframes: "
+                            f"{len(self.timeframes_windows)}/{total_timeframes}")
                 for ix, window_data in enumerate(self.timeframes_windows):
                     logger.debug(f"Window #{ix}: {window_data}")
                     nan_window_start_end[0], nan_window_start_end[1], nan_window_len = window_data
@@ -602,7 +568,8 @@ class DataRepair:
                     #       f'{total_timeframes}/{loaded_timeframes}/{not_loaded_timeframes}'
                     # print(msg, end='')
                 logger.info(
-                    f"{self.__class__.__name__}: Total/loaded/NOT loaded timeframes: {total_timeframes}/{loaded_timeframes}/{not_loaded_timeframes}")
+                    f"{self.__class__.__name__}: Total/loaded/NOT loaded timeframes: "
+                    f"{total_timeframes}/{loaded_timeframes}/{not_loaded_timeframes}")
 
                 """ Drop id and reconstruct """
                 data_df = self.after_preparation(data_df, timeframe)
@@ -611,7 +578,7 @@ class DataRepair:
                     dict_name = col_name
                     if col_name[0].isupper():
                         dict_name = dict_name[0].lower()
-                    col_dtype = Constants.sql_dtypes.get(dict_name, None)
+                    col_dtype = Constants.newsql_dtypes.get(dict_name, None)
                     if col_name == "id":
                         col_dtype = "int64"
                     data_df[col_name] = data_df[col_name].astype(col_dtype)
@@ -663,34 +630,88 @@ class DataUpdaterMeta(PostgreSQLDatabase):
     def prepare_start_end(self,
                           table_name: str,
                           start: Optional[Union[datetime.datetime, int, str]],
-                          end: Optional[Union[datetime.datetime, int, str]]) -> Tuple[int, int]:
+                          end: Optional[Union[datetime.datetime, int, str]]
+                          ) -> Tuple[datetime.datetime, datetime.datetime]:
+        """
+        Normalize start/end to UTC datetime objects for querying new TIMESTAMPTZ table.
 
+        Returns:
+            Tuple[start_datetime_utc, end_datetime_utc]
+        """
+
+        # -----------------------------
+        # Convert start to datetime UTC
+        # -----------------------------
         if isinstance(start, int):
-            start_timestamp = int(start)
+            # assume timestamp in milliseconds
+            start_dt = datetime.datetime.fromtimestamp(start / 1000, tz=timezone.utc)
         elif isinstance(start, str):
-            start_timestamp = datetime.datetime.strptime(start,
-                                                         Constants.default_datetime_format).replace(tzinfo=pytz.utc)
-            start_timestamp = int(start_timestamp.timestamp() * 1000)
+            start_dt = datetime.datetime.strptime(start, Constants.default_datetime_format).replace(tzinfo=timezone.utc)
+        elif isinstance(start, datetime.datetime):
+            # force UTC
+            if start.tzinfo is None:
+                start_dt = start.replace(tzinfo=timezone.utc)
+            else:
+                start_dt = start.astimezone(timezone.utc)
         else:
-            start_timestamp = int(start.timestamp() * 1000)
+            # None → use table min time
+            start_dt = datetime.datetime.fromtimestamp(self.get_min_open_time(table_name) / 1000, tz=timezone.utc)
 
+        # -----------------------------
+        # Convert end to datetime UTC
+        # -----------------------------
         if end is None:
-            end_timestamp = int(self.get_max_open_time(table_name))
+            end_dt = datetime.datetime.fromtimestamp(self.get_max_open_time(table_name) / 1000, tz=timezone.utc)
         elif isinstance(end, int):
-            end_timestamp = int(end)
+            end_dt = datetime.datetime.fromtimestamp(end / 1000, tz=timezone.utc)
         elif isinstance(end, str):
-            end_timestamp = datetime.datetime.strptime(end,
-                                                       Constants.default_datetime_format).replace(tzinfo=pytz.utc)
-            end_timestamp = int(end_timestamp.timestamp() * 1000)
+            end_dt = datetime.datetime.strptime(end, Constants.default_datetime_format).replace(tzinfo=timezone.utc)
         else:
-            end_timestamp = int(end.timestamp() * 1000)
+            if end.tzinfo is None:
+                end_dt = end.replace(tzinfo=timezone.utc)
+            else:
+                end_dt = end.astimezone(timezone.utc)
 
-        start_open_time = int(self.get_min_open_time(table_name))
+        # -----------------------------
+        # Ensure start >= min_open_time
+        # -----------------------------
+        min_open_time = datetime.datetime.fromtimestamp(self.get_min_open_time(table_name) / 1000, tz=timezone.utc)
+        if start_dt < min_open_time:
+            start_dt = min_open_time
 
-        if start_timestamp < start_open_time or start_timestamp is None:
-            start_timestamp = start_open_time
+        return start_dt, end_dt
 
-        return start_timestamp, end_timestamp
+    # def prepare_start_end(self,
+    #                       table_name: str,
+    #                       start: Optional[Union[datetime.datetime, int, str]],
+    #                       end: Optional[Union[datetime.datetime, int, str]]) -> Tuple[int, int]:
+    #
+    #     if isinstance(start, int):
+    #         start_timestamp = int(start)
+    #     elif isinstance(start, str):
+    #         start_timestamp = datetime.datetime.strptime(start,
+    #                                                      Constants.default_datetime_format).replace(tzinfo=pytz.utc)
+    #         start_timestamp = int(start_timestamp.timestamp() * 1000)
+    #     else:
+    #         start_timestamp = int(start.timestamp() * 1000)
+    #
+    #     if end is None:
+    #         end_timestamp = int(self.get_max_open_time(table_name))
+    #     elif isinstance(end, int):
+    #         end_timestamp = int(end)
+    #     elif isinstance(end, str):
+    #         end_timestamp = datetime.datetime.strptime(end,
+    #                                                    Constants.default_datetime_format).replace(tzinfo=pytz.utc)
+    #         end_timestamp = int(end_timestamp.timestamp() * 1000)
+    #     else:
+    #         end_timestamp = int(end.timestamp() * 1000)
+    #
+    #     start_open_time = int(self.get_min_open_time(table_name))
+    #
+    #     if start_timestamp < start_open_time or start_timestamp is None:
+    #         start_timestamp = start_open_time
+    #
+    #     return start_timestamp, end_timestamp
 
 
 class DataUpdater(DataUpdaterMeta):
@@ -713,7 +734,7 @@ class DataUpdater(DataUpdaterMeta):
                               f"Creating new table '{table_name}'"
                         logger.info(msg)
                         self.create_table(table_name)
-                        self.is_duplicates_exists(table_name)
+                        # self.is_duplicates_exists(table_name)
                         self.fetch_historical_spot_data(base_table_name, symbol_pair, timeframe)
                         self.check_and_repair(table_name, symbol_pair, timeframe)
                         continue
@@ -747,7 +768,6 @@ class DataUpdater(DataUpdaterMeta):
             logger.debug(f'Exception {error_msg}')
         else:
             if klines:
-
                 logger.debug(f"Timeframes: {len(klines)}, ETA: {datetime.datetime.now(timezone.utc) - start_time} "
                              f"start: {datetime.datetime.fromtimestamp(klines[0][0] / 1000, tz=pytz.utc)}, "
                              f"end: {datetime.datetime.fromtimestamp(klines[-1][0] / 1000, tz=pytz.utc)}")
@@ -830,7 +850,7 @@ class DataUpdater(DataUpdaterMeta):
 
         _start_time = datetime.datetime.now(timezone.utc)
         if use_dtypes is None:
-            use_dtypes = Constants.sql_dtypes
+            use_dtypes = Constants.newsql_dtypes
 
         start_timestamp, end_timestamp = self.prepare_start_end(table_name, start, end)
         query = sql.SQL("""
@@ -866,7 +886,7 @@ class DataUpdater(DataUpdaterMeta):
 
     def get_all_data_as_df(self, table_name, use_cols=Constants.sql_cols, use_dtypes=None) -> pd.DataFrame:
         if use_dtypes is None:
-            use_dtypes = Constants.sql_dtypes
+            use_dtypes = Constants.newsql_dtypes
 
         start_open_time = self.get_min_open_time(table_name)
         end_open_time = self.get_max_open_time(table_name)
@@ -1008,20 +1028,16 @@ class DataFetcher(DataUpdaterMeta):
                 #   check if data is already in
                 if cache_key in self.CM.cache.keys():
                     raw_df = self.CM.cache[cache_key]
-                    msg = (
-                        f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
-                        f"{start_timestamp}({DataRepair.convert_timestamp_to_datetime(start_timestamp)}) - "
-                        f"{end_timestamp}({DataRepair.convert_timestamp_to_datetime(end_timestamp)})")
-                    logger.debug(msg)
+                    logger.debug(f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
+                                 f"{start_timestamp} - {end_timestamp})")
                 else:
                     for key in self.CM.cache.keys():
                         if (len(key) == 3) and (key[2][1] == table_name) and (start_timestamp >= key[1][1]) and (
                                 end_timestamp <= key[0][1]):
                             raw_df = self.CM.cache[key].loc[start_timestamp:end_timestamp]
-                            msg = (f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
-                                   f"{raw_df.index[0]}({DataRepair.convert_timestamp_to_datetime(raw_df.index[0])}) - "
-                                   f"{raw_df.index[-1]}({DataRepair.convert_timestamp_to_datetime(raw_df.index[-1])}")
-                            logger.debug(msg)
+                            logger.debug(
+                                f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
+                                f"{start_timestamp} - {end_timestamp})")
                             break
                     if raw_df is None:
                         raw_df = prepare_raw_df()
@@ -1033,7 +1049,12 @@ class DataFetcher(DataUpdaterMeta):
         def prepare_resampled_df():
             resampled_df = get_raw_df()
 
-            resampled_df['open_time'] = DataRepair.convert_timestamp_to_datetime(resampled_df['open_time'])
+            # resampled_df['open_time'] = DataRepair.convert_timestamp_to_datetime(resampled_df['open_time'])
+            resampled_df['open_time'] = pd.to_datetime(resampled_df['open_time'],
+                                                       unit='ns',
+                                                       infer_datetime_format=True,
+                                                       utc=True,
+                                                       )
             resampled_df = resampled_df.set_index('open_time', inplace=False)
 
             agg_dict = self._get_agg_dict(use_cols)
@@ -1046,8 +1067,7 @@ class DataFetcher(DataUpdaterMeta):
             logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
                          f"'{table_name}' resample to timeframe: '{freq}', "
                          f"from origin: {origin}, start-end: "
-                         f"{DataRepair.convert_timestamp_to_datetime(start_timestamp)} - "
-                         f"{DataRepair.convert_timestamp_to_datetime(end_timestamp)}")
+                         f"{start_timestamp} - {end_timestamp}")
             return resampled_df
 
         def get_resampled_df():
@@ -1060,8 +1080,7 @@ class DataFetcher(DataUpdaterMeta):
                     resampled_df = self.CM.cache[cache_key]
                     msg = (
                         f"{self.__class__.__name__} #{self.idnum}: Return cached RESAMPLED data: {table_name} / "
-                        f"{start_timestamp}({DataRepair.convert_timestamp_to_datetime(start_timestamp)}) - "
-                        f"{end_timestamp}({DataRepair.convert_timestamp_to_datetime(end_timestamp)})")
+                        f"{start_timestamp}) - {end_timestamp})")
                     logger.debug(msg)
                 else:
                     resampled_df = prepare_resampled_df()
@@ -1083,7 +1102,8 @@ class DataFetcher(DataUpdaterMeta):
 if __name__ == "__main__":
     from dbbinance.config.configpostgresql import ConfigPostgreSQL
     from dbbinance.config.configbinance import ConfigBinance
-    from secureapikey.secureaes import Secure
+
+    # from secureapikey.secureaes import Secure
 
     logger.setLevel(logging.DEBUG)
 
@@ -1115,7 +1135,7 @@ if __name__ == "__main__":
                           binance_api_secret=ConfigBinance.BINANCE_API_SECRET,
                           )
     # updater.test_background_updater()
-    updater.drop_duplicates_rows(table_name="spot_data_btcusdt_1m")
+    # updater.drop_duplicates_rows(table_name="spot_data_btcusdt_1m")
 
     """ Start testing get_data_as_df method """
     start_datetime = datetime.datetime.strptime('01 Aug 2017', '%d %b %Y').replace(tzinfo=pytz.utc)
@@ -1125,12 +1145,15 @@ if __name__ == "__main__":
                                       use_cols=Constants.ohlcv_cols,
                                       use_dtypes=Constants.ohlcv_dtypes
                                       )
-    _data_df['open_time'] = pd.to_datetime(_data_df['open_time'], unit='ms')
-    _data_df['open_time'] = pd.to_datetime(_data_df['open_time'],
-                                           infer_datetime_format=True,
-                                           format=Constants.default_datetime_format)
+    # _data_df['open_time'] = pd.to_datetime(_data_df['open_time'], unit='ms')
+    # _data_df['open_time'] = pd.to_datetime(_data_df['open_time'],
+    #                                        infer_datetime_format=True,
+    #                                        format=Constants.default_datetime_format)
 
-    _data_df['open_time'] = DataRepair.convert_timestamp_to_datetime(_data_df['open_time'])
+    # _data_df['open_time'] = DataRepair.convert_timestamp_to_datetime(_data_df['open_time'])
+    _data_df['open_time'] = pd.to_datetime(_data_df['open_time'], unit='ns', infer_datetime_format=True, utc=True, )
+    # _data_df['open_time'] = DataRepair.convert_int64index_to_timestamp(_data_df['open_time']/1000)
+    # df['datetime_utc'] = pd.to_datetime(df['ns_time'], unit='ns', utc=True)
     _data_df = _data_df.set_index('open_time', inplace=False)
 
     print(_data_df.head(15).to_string())

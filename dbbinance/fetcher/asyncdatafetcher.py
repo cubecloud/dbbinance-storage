@@ -1,13 +1,13 @@
 import os
-import sys
-import time
+import pytz
 
 import asyncpg
-import pytz
 import asyncio
 import logging
 import datetime
+import numpy as np
 import pandas as pd
+
 from typing import Tuple, Union, Optional, List, Any
 from datetime import timezone
 
@@ -17,6 +17,7 @@ from dbbinance.fetcher.constants import Constants
 from dbbinance.fetcher import AsyncSQLMeta
 from dbbinance.fetcher import AsyncPool
 from dbbinance.fetcher import create_pool
+from dbbinance.fetcher import ceil_time, floor_time
 
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 from dbbinance.fetcher.datautils import convert_timeframe_to_freq
@@ -30,31 +31,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.74
+__version__ = 0.79
 
 logger = logging.getLogger()
-
-
-def ceil_time(dt=None, ceil_to='1h') -> datetime.datetime:
-    if dt is None:
-        dt = datetime.datetime.now()
-    dt = pd.Timestamp(dt)
-    freq_map = {'h': 'H', 'm': 'T', 's': 'S', 'd': 'D', 'W': 'W', 'M': 'M'}
-    unit = ceil_to[-1]
-    value = int(ceil_to[:-1])
-    freq = f'{value}{freq_map[unit]}'
-    return dt.ceil(freq).to_pydatetime()
-
-
-def floor_time(dt=None, floor_to='1h', tz=None) -> datetime.datetime:
-    if dt is None:
-        dt = datetime.datetime.now(tz)
-    dt = pd.Timestamp(dt)
-    freq_map = {'h': 'H', 'm': 'T', 's': 'S', 'd': 'D', 'W': 'W', 'M': 'M'}
-    unit = floor_to[-1]
-    value = int(floor_to[:-1])
-    freq = f'{value}{freq_map[unit]}'
-    return (dt - pd.Timedelta(1, unit='ns')).floor(freq).to_pydatetime()
 
 
 class AsyncPostgreSQLDatabase(AsyncSQLMeta):
@@ -63,8 +42,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         self.max_verbose = False
 
     @staticmethod
-    def prepare_table_name(market: str = None,
-                           symbol_pair: str = "BTCUSDT") -> str:
+    def prepare_table_name(market: str = None, symbol_pair: str = "BTCUSDT") -> str:
         if market is None:
             market = "spot"
         base_table_name = f"{market}_data"
@@ -72,183 +50,123 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         table_name = f"{base_table_name}_{symbol_pair}_{timeframe}".lower()
         return table_name
 
-    async def is_data_exists(self, table_name):
-        query = """
-        SELECT * FROM {} LIMIT 1
-        """
-        _data = await self.asyncdb_mgr.single_select_query(
-            query.format(table_name)
-        )
-        return _data is not None
+    async def is_data_exists(self, table_name: str) -> bool:
+        query = f"SELECT 1 FROM {table_name} LIMIT 1"
+        result = await self.asyncdb_mgr.single_select_query(query)
+        return result is not None
 
     async def create_table(self, table_name: str):
         """
-        Creates a new table in the database.
-
-        Args:
-            table_name  (str): Name of the table to create.
-
-        Returns:
-            None
+        Creates the optimized table with TIMESTAMPTZ + FLOAT8
         """
         columns_definition = [
-            ("id", "SERIAL PRIMARY KEY"),
-            ("open_time", "BIGINT"),
-            ("open", "NUMERIC"),
-            ("high", "NUMERIC"),
-            ("low", "NUMERIC"),
-            ("close", "NUMERIC"),
-            ("volume", "NUMERIC"),
-            ("close_time", "BIGINT"),
-            ("quote_asset_volume", "NUMERIC"),
-            ("trades", "INTEGER"),
-            ("taker_buy_base", "NUMERIC"),
-            ("taker_buy_quote", "NUMERIC"),
-            ("ignored", "NUMERIC")
+            "open_time TIMESTAMPTZ NOT NULL PRIMARY KEY",
+            "open FLOAT8",
+            "high FLOAT8",
+            "low FLOAT8",
+            "close FLOAT8",
+            "volume FLOAT8",
+            "close_time TIMESTAMPTZ",
+            "quote_asset_volume FLOAT8",
+            "trades INTEGER",
+            "taker_buy_base FLOAT8",
+            "taker_buy_quote FLOAT8",
+            "ignored FLOAT8"
         ]
 
-        # Build the CREATE TABLE query dynamically
-        query = "CREATE TABLE {} ({})".format(
-            table_name,
-            ", ".join("{} {}".format(col, data_type) for col, data_type in columns_definition)
-        )
-
+        query = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(columns_definition)});"
         await self.asyncdb_mgr.modify_query(query)
 
-        # Execute the constructed query asynchronously
-        #
-        # async with AsyncPool(self.pool) as conn:
-        #     await conn.execute(query)
+        # Recommended indexes
+        await self.asyncdb_mgr.modify_query(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {table_name}_open_time_idx ON {table_name} (open_time);")
+        await self.asyncdb_mgr.modify_query(
+            f"CREATE INDEX IF NOT EXISTS {table_name}_open_time_brin_idx ON {table_name} USING BRIN (open_time);")
 
-        logger.debug(f"{self.__class__.__name__}: Created table '{table_name}'")
+        logger.debug(f"{self.__class__.__name__}: Created table '{table_name}' with indexes")
 
     async def insert_kline_to_table(self, table_name: str, kline: list):
         """
-        Insert a K-line record into the specified table.
+        Insert single K-line into the table
+        """
+        open_time, open_price, high_price, low_price, close_price, volume, close_time, \
+            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[:12]
+
+        query = f"""
+        INSERT INTO {table_name} (
+            open_time, open, high, low, close, volume, close_time,
+            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        ON CONFLICT (open_time) DO NOTHING;
+        """
+
+        await self.asyncdb_mgr.modify_query(query, (
+            datetime.datetime.fromtimestamp(open_time / 1000, tz=timezone.utc),
+            float(open_price), float(high_price), float(low_price), float(close_price), float(volume),
+            datetime.datetime.fromtimestamp(close_time / 1000, tz=timezone.utc),
+            float(quote_asset_volume), int(trades), float(taker_buy_base), float(taker_buy_quote), float(ignored)
+        ))
+
+    async def insert_klines_to_table(self, table_name: str, klines: list):
+        """
+        Insert multiple K-line records into the specified table efficiently using unnest.
+        Converts timestamps from ms -> datetime and handles bulk insertion.
 
         Args:
-            table_name  (str): Name of the target table.
-            kline       (list): Array of values representing the K-line data.
+            table_name (str): Target table name.
+            klines (list): List of K-line records, each record is a list of 12 values:
+                [open_time_ms, open, high, low, close, volume, close_time_ms,
+                 quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored]
 
         Returns:
             None
         """
-        # Unpack kline values
-        open_time, open_price, high_price, low_price, close_price, volume, close_time, \
-            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[:12]
+        if not klines:
+            return
 
-        # Correct way to reference table name using Identifier
-        query = """
-            INSERT INTO {table} (
-                open_time, open, high, low, close, volume, close_time, 
-                quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
-         """.format(table=table_name)
+        # Convert to NumPy array for fast slicing
+        arr = np.array(klines, dtype='object')
 
-        # Execute the query with tuple of values
-        await self.asyncdb_mgr.modify_query(query, (open_time, open_price, high_price, low_price, close_price, volume,
-                                                    close_time, quote_asset_volume, trades, taker_buy_base,
-                                                    taker_buy_quote, ignored))
+        # Convert timestamps from ms -> datetime
+        open_times = np.array(arr[:, 0], dtype='datetime64[ms]').tolist()
+        close_times = np.array(arr[:, 6], dtype='datetime64[ms]').tolist()
 
-    # async def insert_klines_to_table(self, table_name: str, klines):
-    #     """
-    #     Insert K-line records into the specified table using asyncpg.
-    #
-    #     Args:
-    #         table_name (str): Name of the target table.
-    #         klines (list): Array of values representing the K-line data.
-    #
-    #     Returns:
-    #         int: Number of klines successfully inserted
-    #     """
-    #     if not klines:
-    #         return 0
-    #
-    #     query = f"INSERT INTO {table_name} (open_time, open, high, low, close, volume, close_time, " \
-    #             f"quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored) " \
-    #             f"VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
-    #
-    #     try:
-    #         async with self.pool.acquire() as conn:
-    #             # Begin transaction
-    #             async with conn.transaction():
-    #                 # Execute the batch insert and get the number of affected rows
-    #                 _ = await conn.executemany(query, klines)
-    #                 # Note: executemany doesn't return row count in asyncpg
-    #                 # We'll return the number of klines processed
-    #                 return len(klines)
-    #
-    #     except Exception as e:
-    #         logger.error(f"Error inserting klines into {table_name}: {str(e)}")
-    #         raise
+        # Prepare other columns
+        open_ = arr[:, 1].astype(np.float64).tolist()
+        high = arr[:, 2].astype(np.float64).tolist()
+        low = arr[:, 3].astype(np.float64).tolist()
+        close = arr[:, 4].astype(np.float64).tolist()
+        volume = arr[:, 5].astype(np.float64).tolist()
+        quote_asset_volume = arr[:, 7].astype(np.float64).tolist()
+        trades = arr[:, 8].astype(np.int32).tolist()
+        taker_buy_base = arr[:, 9].astype(np.float64).tolist()
+        taker_buy_quote = arr[:, 10].astype(np.float64).tolist()
+        ignored = arr[:, 11].astype(np.float64).tolist()
 
-    async def insert_klines_to_table(self, table_name: str, klines: List[Tuple]):
-        """
-        Massively inserts K-line records into a specific table while accurately counting the number of inserted rows.
-
-        Args:
-            table_name (str): Target database table to insert data into.
-            klines (List[Tuple]): List of tuples containing K-line data.
-
-        Returns:
-            int: Actual number of klines successfully inserted.
-        """
-        if not klines or len(klines) == 0:
-            return 0
-
-        # Mapping of column names to their corresponding PostgreSQL array types
-        types_map = {
-            "open_time": "BIGINT[]",
-            "open": "NUMERIC[]",
-            "high": "NUMERIC[]",
-            "low": "NUMERIC[]",
-            "close": "NUMERIC[]",
-            "volume": "NUMERIC[]",
-            "close_time": "BIGINT[]",
-            "quote_asset_volume": "NUMERIC[]",
-            "trades": "INTEGER[]",
-            "taker_buy_base": "NUMERIC[]",
-            "taker_buy_quote": "NUMERIC[]",
-            "ignored": "NUMERIC[]"
-        }
-
-        # Column names matching the schema of the target table
-        columns = ["open_time", "open", "high", "low", "close", "volume",
-                   "close_time", "quote_asset_volume", "trades", "taker_buy_base",
-                   "taker_buy_quote", "ignored"]
-
-        # Building the part of the SQL query responsible for converting arrays into rows
-        arrays_query_part = ", ".join([
-            f"unnest(${i+1}::{types_map[col]}) AS {col}" for i, col in enumerate(columns)
-        ])
-
-        # Main SQL query utilizing CTE and RETURNING clause to ensure accurate row counts
-        sql = f"""
-        WITH input_data AS (
-            SELECT {arrays_query_part}
-        ),
-        inserted_data AS (
-            INSERT INTO {table_name}(open_time, open, high, low, close, volume, close_time,
-                                     quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored)
-            SELECT *
-            FROM input_data
-            ON CONFLICT DO NOTHING
-            RETURNING *
+        # Build unnest query
+        sql_query = f"""
+        INSERT INTO {table_name} (
+            open_time, open, high, low, close, volume, close_time,
+            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored
         )
-        SELECT COUNT(*) FROM inserted_data;
+        SELECT *
+        FROM unnest(
+            $1::timestampz[], $2::float8[], $3::float8[], $4::float8[], $5::float8[], $6::float8[],
+            $7::timestampz[], $8::float8[], $9::int[], $10::float8[], $11::float8[], $12::float8[]
+        )
+        ON CONFLICT (open_time) DO NOTHING;
         """
-
-        # Efficiently transform the list of tuples into lists suitable for SQL parameters using zip()
-        transposed_data = list(zip(*klines))
 
         try:
             async with AsyncPool(self.pool) as conn:
-                # Execute the query and fetch the exact number of inserted rows
-                inserted_count = await conn.fetchval(sql, *transposed_data)
-                return inserted_count
-
+                await conn.execute(
+                    sql_query,
+                    open_times, open_, high, low, close, volume,
+                    close_times, quote_asset_volume, trades,
+                    taker_buy_base, taker_buy_quote, ignored
+                )
         except Exception as e:
-            logger.error(f"{self.__class__.__name__}: Error inserting klines into {table_name}: {str(e)}")
+            logger.error(f"{self.__class__.__name__}: Error inserting klines into {table_name}: {e}")
             raise
 
     def logger_debug(self, msg):
@@ -256,109 +174,63 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             logger.debug(msg)
 
     async def get_min_open_time(self, table_name: str, retry=7) -> int:
-        self.logger_debug(
-            f"{self.__class__.__name__}: get_min_open_time called with table_name={table_name} and retry={retry}")
-
         try:
-            query = """SELECT MIN(open_time) FROM {}""".format(table_name)
-            self.logger_debug(f"{self.__class__.__name__}: Executing query: {query}")
-
+            query = f"SELECT MIN(open_time) FROM {table_name}"
             for _ in range(retry + 1):
-                try:
-                    async with AsyncPool(self.pool) as conn:  # Use a separate connection for each attempt.
-                        min_open_time = await conn.fetchval(query)
-                        if min_open_time is not None:
-                            break
-                    await asyncio.sleep(1)  # Wait before next retry.
-                except Exception as e:
-                    logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
-
-            if min_open_time is not None:
-                self.logger_debug(f"{self.__class__.__name__}: Query returned min_open_time={min_open_time}")
-            else:
-                self.logger_debug(f"{self.__class__.__name__}: No rows found or no more retries left")
+                async with AsyncPool(self.pool) as conn:
+                    min_open_time = await conn.fetchval(query)
+                    if min_open_time is not None:
+                        return int(min_open_time.timestamp() * 1000)
+                await asyncio.sleep(1)
         except Exception as e:
-            logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
-            min_open_time = None
-
-        if (not min_open_time) or (min_open_time is None):
-            min_open_time = datetime.datetime.strptime('01 Jan 2017', '%d %b %Y')
-            min_open_time = int(datetime.datetime.timestamp(min_open_time) * 1000)
-            self.logger_debug(f"{self.__class__.__name__}: Returning default value: {min_open_time}")
-        else:
-            self.logger_debug(f"{self.__class__.__name__}: Returning min_open_time: {min_open_time}")
-
-        return min_open_time
+            logger.error(f"{self.__class__.__name__}: {e}")
+        # default
+        dt = datetime.datetime.strptime("01 Jan 2017", "%d %b %Y")
+        return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
     async def get_max_open_time(self, table_name: str, retry=7) -> int:
-        self.logger_debug(
-            f"{self.__class__.__name__}:get_max_open_time called with table_name={table_name} and retry={retry}")
-
         try:
-            query = """SELECT MAX(open_time) FROM {}""".format(table_name)
-            self.logger_debug(f"{self.__class__.__name__}: Executing query: {query}")
-
+            query = f"SELECT MAX(open_time) FROM {table_name}"
             for _ in range(retry + 1):
-                async with AsyncPool(self.pool) as conn:  # Use a separate connection for each attempt.
-                    try:
-                        max_open_time = await conn.fetchval(query)
-                        if max_open_time is not None:
-                            break
-                    except Exception as e:
-                        logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
-                await asyncio.sleep(1)  # Wait before next retry.
-
-            if max_open_time is not None:
-                self.logger_debug(f"{self.__class__.__name__}: Query returned max_open_time={max_open_time}")
-            else:
-                self.logger_debug(f"{self.__class__.__name__}: No rows found or no more retries left")
+                async with AsyncPool(self.pool) as conn:
+                    max_open_time = await conn.fetchval(query)
+                    if max_open_time is not None:
+                        return int(max_open_time.timestamp() * 1000)
+                await asyncio.sleep(1)
         except Exception as e:
-            logger.error(f"{self.__class__.__name__}: An error occurred while executing the query: {e}")
-            max_open_time = None
+            logger.error(f"{self.__class__.__name__}: {e}")
+        # fallback
+        return int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
 
-        if (not max_open_time) or (max_open_time is None):
-            max_open_time = datetime.datetime.now(timezone.utc)
-            max_open_time = int(datetime.datetime.timestamp(max_open_time) * 1000)
-            self.logger_debug(f"{self.__class__.__name__}: Returning current timestamp: {max_open_time}")
-        else:
-            self.logger_debug(f"{self.__class__.__name__}: Returning max_open_time: {max_open_time}")
-
-        return max_open_time
-
-    async def is_duplicates_exists(self, table_name, show=True) -> bool:
-        query = """
-            SELECT open_time, COUNT(*)
-            FROM {table}
-            GROUP BY open_time
-            HAVING COUNT(*) > 1;
-        """.format(table=table_name)
-
-        duplicates = await self.asyncdb_mgr.select_query(query)
-        status = False
-        if duplicates:
-            status = True
-            if show:
-                logger.warning(f"{self.__class__.__name__}: Duplicates:")
-                for row in duplicates:
-                    logger.warning(f"{self.__class__.__name__}: {row}")
-        return status
-
-    async def drop_duplicates_rows(self, table_name):
-        query = """
-            DELETE FROM {table}
-            WHERE id IN (
-                SELECT id
-                FROM (
-                    SELECT id,
-                           ROW_NUMBER() OVER(PARTITION BY open_time ORDER BY id) AS row_num
-                    FROM {table}
-                ) t
-                WHERE t.row_num > 1
-            );
-        """.format(table=table_name)
-
-        if not (await self.asyncdb_mgr.modify_query(query)):
-            logger.warning(f"{self.__class__.__name__}: Can't drop duplicates:")
+    # async def is_duplicates_exists(self, table_name: str, show=True) -> bool:
+    #     query = f"""
+    #     SELECT open_time, COUNT(*)
+    #     FROM {table_name}
+    #     GROUP BY open_time
+    #     HAVING COUNT(*) > 1;
+    #     """
+    #     duplicates = await self.asyncdb_mgr.select_query(query)
+    #     if duplicates and show:
+    #         logger.warning(f"{self.__class__.__name__}: Duplicates found")
+    #         for row in duplicates:
+    #             logger.warning(f"{row}")
+    #     return bool(duplicates)
+    #
+    # async def drop_duplicates_rows(self, table_name: str):
+    #     query = f"""
+    #     DELETE FROM {table_name}
+    #     WHERE id IN (
+    #         SELECT id
+    #         FROM (
+    #             SELECT id,
+    #                    ROW_NUMBER() OVER(PARTITION BY open_time ORDER BY id) AS row_num
+    #             FROM {table_name}
+    #         ) t
+    #         WHERE t.row_num > 1
+    #     );
+    #     """
+    #     if not await self.asyncdb_mgr.modify_query(query):
+    #         logger.warning(f"{self.__class__.__name__}: Can't drop duplicates")
 
 
 class DataRepair:
@@ -743,34 +615,57 @@ class AsyncDataUpdaterMeta(AsyncPostgreSQLDatabase):
     async def prepare_start_end(self,
                                 table_name: str,
                                 start: Optional[Union[datetime.datetime, int, str]],
-                                end: Optional[Union[datetime.datetime, int, str]]) -> Tuple[int, int]:
+                                end: Optional[Union[datetime.datetime, int, str]]
+                                ) -> Tuple[datetime.datetime, datetime.datetime]:
+        """
+        Normalize start/end to UTC datetime objects for querying new TIMESTAMPTZ table.
 
+        Returns:
+            Tuple[start_datetime_utc, end_datetime_utc]
+        """
+
+        # -----------------------------
+        # Convert start to datetime UTC
+        # -----------------------------
         if isinstance(start, int):
-            start_timestamp = int(start)
+            # assume timestamp in milliseconds
+            start_dt = datetime.datetime.fromtimestamp(start / 1000, tz=timezone.utc)
         elif isinstance(start, str):
-            start_timestamp = datetime.datetime.strptime(start,
-                                                         Constants.default_datetime_format).replace(tzinfo=pytz.utc)
-            start_timestamp = int(start_timestamp.timestamp() * 1000)
+            start_dt = datetime.datetime.strptime(start, Constants.default_datetime_format).replace(tzinfo=timezone.utc)
+        elif isinstance(start, datetime.datetime):
+            # force UTC
+            if start.tzinfo is None:
+                start_dt = start.replace(tzinfo=timezone.utc)
+            else:
+                start_dt = start.astimezone(timezone.utc)
         else:
-            start_timestamp = int(start.timestamp() * 1000)
+            # None → use table min time
+            start_dt = datetime.datetime.fromtimestamp(await self.get_min_open_time(table_name) / 1000, tz=timezone.utc)
 
+        # -----------------------------
+        # Convert end to datetime UTC
+        # -----------------------------
         if end is None:
-            end_timestamp = int(await self.get_max_open_time(table_name))
+            end_dt = datetime.datetime.fromtimestamp(await self.get_max_open_time(table_name) / 1000, tz=timezone.utc)
         elif isinstance(end, int):
-            end_timestamp = int(end)
+            end_dt = datetime.datetime.fromtimestamp(end / 1000, tz=timezone.utc)
         elif isinstance(end, str):
-            end_timestamp = datetime.datetime.strptime(end,
-                                                       Constants.default_datetime_format).replace(tzinfo=pytz.utc)
-            end_timestamp = int(end_timestamp.timestamp() * 1000)
+            end_dt = datetime.datetime.strptime(end, Constants.default_datetime_format).replace(tzinfo=timezone.utc)
         else:
-            end_timestamp = int(end.timestamp() * 1000)
+            if end.tzinfo is None:
+                end_dt = end.replace(tzinfo=timezone.utc)
+            else:
+                end_dt = end.astimezone(timezone.utc)
 
-        start_open_time = int(await self.get_min_open_time(table_name))
+        # -----------------------------
+        # Ensure start >= min_open_time
+        # -----------------------------
+        min_open_time = datetime.datetime.fromtimestamp(await self.get_min_open_time(table_name) / 1000,
+                                                        tz=timezone.utc)
+        if start_dt < min_open_time:
+            start_dt = min_open_time
 
-        if start_timestamp < start_open_time or start_timestamp is None:
-            start_timestamp = start_open_time
-
-        return start_timestamp, end_timestamp
+        return start_dt, end_dt
 
 
 class AsyncDataUpdater(AsyncDataUpdaterMeta):
@@ -794,7 +689,7 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                     if not await self.is_table_exists(table_name):
                         logger.info(f"{self.__class__.__name__} #{self.idnum}: Creating table '{table_name}'")
                         await self.create_table(table_name)
-                        await self.is_duplicates_exists(table_name)
+                        # await self.is_duplicates_exists(table_name)
 
                         # 2. WAIT for data fetching to finish before next line
                         # Since fetch_historical_spot_data is async def, await it directly.
@@ -890,9 +785,13 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Updater - exception {error_msg}")
                     else:
                         if klines:
-                            self.last_timeframe_datetime = datetime.datetime.fromtimestamp(
-                                klines[-1][0] / 1000, tz=pytz.utc)
-                            result = await self.insert_klines_to_table(table_name, klines)
+                            self.last_timeframe_datetime = datetime.datetime.fromtimestamp(klines[-1][0] / 1000,
+                                                                                           tz=pytz.utc)
+                            if klines > 1:
+
+                                result = await self.insert_klines_to_table(table_name, klines)
+                            else:
+                                result = await self.insert_kline_to_table(table_name, klines)
                             logger.info(
                                 f"{self.__class__.__name__} #{self.idnum}: Updater - {table_name} - "
                                 f"Written timeframes: {result}/{len(klines)}. "
@@ -1064,22 +963,22 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
 
         async def fetch_raw_data():
-            query = f"""SELECT {', '.join(use_cols)} 
-                        FROM {table_name} 
-                        WHERE open_time >= {start_timestamp} AND open_time <= {end_timestamp};
-                    """
+            query = f"""
+                SELECT {', '.join(use_cols)}
+                FROM {table_name}
+                WHERE open_time >= $1
+                  AND open_time <= $2
+                ORDER BY open_time ASC
+            """
 
-            # Use an async context manager to manage the connection
             async with AsyncPool(self.pool) as conn:
-                raw_data = await conn.fetch(query)
-
-            return raw_data
+                return await conn.fetch(query, start_timestamp, end_timestamp)
 
         async def prepare_raw_df():
-            _df = pd.DataFrame(await fetch_raw_data(), columns=list(use_cols))
+            _df = await fetch_raw_data()
+            _df = pd.DataFrame(_df, columns=list(use_cols))
             _df = _df.astype(use_dtypes)
             _df = _df.sort_values(by=['open_time']).set_index('open_time', inplace=False, drop=False)
-
             return _df
 
         async def get_raw_df():
@@ -1089,10 +988,8 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
 
             if cached and (cache_key in self.CM.cache):
                 raw_df = self.CM.cache[cache_key]
-
                 print(f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
-                      f"{start_timestamp}({DataRepair.convert_timestamp_to_datetime(start_timestamp)}) - "
-                      f"{end_timestamp}({DataRepair.convert_timestamp_to_datetime(end_timestamp)}")
+                      f"{start_timestamp} - {end_timestamp}")
             else:
                 # if not cached, fetch the data and cache it
                 raw_df = await prepare_raw_df()
@@ -1102,9 +999,9 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
 
         async def prepare_resampled_df():
             resampled_df = await get_raw_df()
-
             # convert timestamps to datetime objects
-            resampled_df['open_time'] = DataRepair.convert_timestamp_to_datetime(resampled_df['open_time'])
+            resampled_df['open_time'] = pd.to_datetime(resampled_df['open_time'], unit='ns', infer_datetime_format=True,
+                                                       utc=True, )
             resampled_df = resampled_df.set_index('open_time', inplace=False)
 
             # prepare aggregation dictionary for the 'agg' method of pandas DataFrame
@@ -1117,9 +1014,7 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
 
             print(f"{self.__class__.__name__} #{self.idnum}: "
                   f"'{table_name}' resample to timeframe: '{freq}', "
-                  f"from origin: {origin}, start-end: "
-                  f"{DataRepair.convert_timestamp_to_datetime(start_timestamp)} - "
-                  f"{DataRepair.convert_timestamp_to_datetime(end_timestamp)}")
+                  f"from origin: {origin}, start-end: {start_timestamp} - {end_timestamp}")
 
             return resampled_df
 
@@ -1132,10 +1027,8 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
                 # check if the data is already cached
                 if cache_key in self.CM.cache:
                     resampled_df = self.CM.cache[cache_key]
-
                     print(f"{self.__class__.__name__} #{self.idnum}: Return cached RESAMPLED data: {table_name} / "
-                          f"{start_timestamp}({DataRepair.convert_timestamp_to_datetime(start_timestamp)}) - "
-                          f"{end_timestamp}({DataRepair.convert_timestamp_to_datetime(end_timestamp)}")
+                          f"{start_timestamp} - {end_timestamp}")
                 else:
                     resampled_df = await prepare_resampled_df()
                     self.CM.update_cache(key=cache_key, value=resampled_df.copy(deep=True))
@@ -1160,22 +1053,28 @@ async def main_tests():
                                binance_api_secret=ConfigBinance.BINANCE_API_SECRET,
                                )
 
-    print("Drop duplicates. Success: ", await updater.drop_duplicates_rows(table_name="spot_data_btcusdt_1m"))
+    # print("Drop duplicates. Success: ", await updater.drop_duplicates_rows(table_name="spot_data_btcusdt_1m"))
 
     """ Start testing get_data_as_df method """
     start_datetime = datetime.datetime.strptime('01 Aug 2017', '%d %b %Y').replace(tzinfo=timezone.utc)
     _data_df = await updater.get_data_as_df(table_name="spot_data_btcusdt_1m",
                                             start=start_datetime,
-                                            end=datetime.datetime.now(timezone.utc),
+                                            end=datetime.datetime.now(tz=timezone.utc),
                                             use_cols=Constants.ohlcv_cols,
                                             use_dtypes=Constants.ohlcv_dtypes
                                             )
-    _data_df['open_time'] = pd.to_datetime(_data_df['open_time'], unit='ms')
+    # _data_df['open_time'] = pd.to_datetime(_data_df['open_time'], unit='ms')
+    # _data_df['open_time'] = pd.to_datetime(_data_df['open_time'],
+    #                                        infer_datetime_format=True,
+    #                                        format=Constants.default_datetime_format)
+    #
+    # _data_df['open_time'] = DataRepair.convert_timestamp_to_datetime(_data_df['open_time'])
     _data_df['open_time'] = pd.to_datetime(_data_df['open_time'],
+                                           unit='ns',
                                            infer_datetime_format=True,
-                                           format=Constants.default_datetime_format)
+                                           utc=True,
+                                           )
 
-    _data_df['open_time'] = DataRepair.convert_timestamp_to_datetime(_data_df['open_time'])
     _data_df = _data_df.set_index('open_time', inplace=False)
 
     print(_data_df.head(15).to_string())

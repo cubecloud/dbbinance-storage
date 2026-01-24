@@ -1,7 +1,8 @@
+import datetime
 from typing import Tuple
 from dataclasses import dataclass
 
-__version__ = 0.019
+__version__ = 0.023
 
 
 @dataclass
@@ -76,6 +77,20 @@ class Constants:
                   'taker_buy_quote': float,
                   'ignored': float,
                   }
+
+    newsql_dtypes = {'open_time': datetime.datetime,
+                     'open': float,
+                     'high': float,
+                     'low': float,
+                     'close': float,
+                     'volume': float,
+                     'close_time': datetime.datetime,
+                     'quote_asset_volume': float,
+                     'trades': int,
+                     'taker_buy_base': float,
+                     'taker_buy_quote': float,
+                     'ignored': float,
+                     }
 
     base_tables_names: tuple = ("spot_data",
                                 # "futures_data"
