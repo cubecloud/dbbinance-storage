@@ -314,7 +314,8 @@ class DataRepair:
 
     def before_preparation(self, data_df):
         """ Remember 1st ID to reconstruct at the end """
-        self.start_id = data_df["id"][0]
+        if "id" in data_df.columns:
+            self.start_id = data_df["id"][0]
 
         self.ts_start_end_open_time_before = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
 
@@ -337,28 +338,43 @@ class DataRepair:
 
     def after_preparation(self, data_df, timeframe):
         """ Reset index to get 'open_time' as column"""
-        data_df = data_df.reset_index()
+        if 'id' in data_df.columns:
+            data_df = data_df.reset_index()
+            """ Reconstruct 'id' column """
+            data_df = data_df.drop(columns=["id"])
+            data_df.insert(0, "id", range(self.start_id, self.start_id + len(data_df)))
+            data_df["id"] = data_df["id"].astype("int64")
 
-        """ Reconstruct 'id' column """
-        data_df = data_df.drop(columns=["id"])
+            """ Convert _datetime_ of 'open_time' to timestamp format """
+            data_df["open_time"] = self.convert_datetime_to_timestamp(data_df["open_time"])
+            self.ts_start_end_open_time_after = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
+            logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' before: "
+                         f"{self.ts_start_end_open_time_before}")
+            logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' after: "
+                         f"{self.ts_start_end_open_time_after}")
 
-        data_df.insert(0, "id", range(self.start_id, self.start_id + len(data_df)))
-        data_df["id"] = data_df["id"].astype("int64")
+            """ Create new close_time and ad it to data_df """
+            frequency = convert_timeframe_to_freq(timeframe)
+            close_time_dt = pd.date_range(self.start_end_close_time[0], self.start_end_close_time[1], freq=frequency)
 
-        """ Convert _datetime_ of 'open_time' to timestamp format """
-        data_df["open_time"] = self.convert_datetime_to_timestamp(data_df["open_time"])
-        self.ts_start_end_open_time_after = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
-        logger.debug(
-            f"{self.__class__.__name__}: Start/end timestamp of 'open_time' before: {self.ts_start_end_open_time_before}")
-        logger.debug(
-            f"{self.__class__.__name__}: Start/end timestamp of 'open_time' after: {self.ts_start_end_open_time_after}")
+            """ Convert _datetime_ of 'close_time' to timestamp format and insert back """
+            data_df.insert(7, "close_time", self.convert_datetime_to_timestamp(pd.Series(close_time_dt)))
+        else:
+            """ Convert _datetime_ of 'open_time' to timestamp format """
+            data_df["open_time"] = self.convert_datetime_to_timestamp(data_df["open_time"])
+            self.ts_start_end_open_time_after = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
+            logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' before: "
+                         f"{self.ts_start_end_open_time_before}")
+            logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' after: "
+                         f"{self.ts_start_end_open_time_after}")
 
-        """ Create new close_time and ad it to data_df """
-        frequency = convert_timeframe_to_freq(timeframe)
-        close_time_dt = pd.date_range(self.start_end_close_time[0], self.start_end_close_time[1], freq=frequency)
+            """ Create new close_time and ad it to data_df """
+            frequency = convert_timeframe_to_freq(timeframe)
+            close_time_dt = pd.date_range(self.start_end_close_time[0], self.start_end_close_time[1], freq=frequency)
 
-        """ Convert _datetime_ of 'close_time' to timestamp format and insert back """
-        data_df.insert(7, "close_time", self.convert_datetime_to_timestamp(pd.Series(close_time_dt)))
+            """ Convert _datetime_ of 'close_time' to timestamp format and insert back """
+            data_df.insert(6, "close_time", self.convert_datetime_to_timestamp(pd.Series(close_time_dt)))
+
         return data_df
 
     @classmethod
@@ -446,8 +462,13 @@ class DataRepair:
                         temp_df = pd.DataFrame(kdata,
                                                columns=list(Constants.binance_cols),
                                                )
-                        temp_df[self.open_time_col_name] = pd.to_datetime(temp_df[self.open_time_col_name],
-                                                                          unit='ms')
+                        temp_df['open_time'] = pd.to_datetime(temp_df['open_time'],
+                                                              unit='ns',
+                                                              infer_datetime_format=True,
+                                                              utc=True,
+                                                              )
+                        # temp_df[self.open_time_col_name] = pd.to_datetime(temp_df[self.open_time_col_name],
+                        #                                                   unit='ms')
                         temp_df[self.open_time_col_name] = pd.to_datetime(temp_df[self.open_time_col_name],
                                                                           # unit='ms',
                                                                           infer_datetime_format=True,
@@ -564,7 +585,7 @@ class DataRepair:
                     dict_name = col_name
                     if col_name[0].isupper():
                         dict_name = dict_name[0].lower()
-                    col_dtype = Constants.sql_dtypes.get(dict_name, None)
+                    col_dtype = Constants.newsql_dtypes.get(dict_name, None)
                     if col_name == "id":
                         col_dtype = "int64"
                     data_df[col_name] = data_df[col_name].astype(col_dtype)
