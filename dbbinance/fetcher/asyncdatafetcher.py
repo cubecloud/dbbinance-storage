@@ -820,7 +820,8 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
         query = f"""
             SELECT {cols_str} 
             FROM {table_name} 
-            WHERE open_time BETWEEN $1 AND $2
+            WHERE open_time >= $1
+            AND open_time <= $2
             ORDER BY open_time ASC
          """
 

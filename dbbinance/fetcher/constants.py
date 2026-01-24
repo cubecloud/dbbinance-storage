@@ -92,15 +92,15 @@ class Constants:
                           "ignored"
                           )
 
-    newsql_dtypes = {'open_time': datetime.datetime,
+    newsql_dtypes = {'open_time': 'datetime64[ns, UTC]',
                      'open': float,
                      'high': float,
                      'low': float,
                      'close': float,
                      'volume': float,
-                     'close_time': datetime.datetime,
+                     'close_time': 'datetime64[ns, UTC]',
                      'quote_asset_volume': float,
-                     'trades': int,
+                     'trades': 'int64',
                      'taker_buy_base': float,
                      'taker_buy_quote': float,
                      'ignored': float,
