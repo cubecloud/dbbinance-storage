@@ -23,8 +23,8 @@ class AsyncDBConnectionManager:
             raise f"Error: pool is not initialized"
         self.pool = pool
 
-    async def modify_query(self, query: str, params: Optional[Tuple] = None, is_transaction: bool = True,
-                           timeout: Optional[int] = None) -> bool:
+    async def modify_query(self, query: str, params: Optional[Tuple] = None, is_transaction: bool = False,
+                           timeout: Optional[int] = 2) -> bool:
         """
         Execute a modifying query (CREATE, INSERT, UPDATE, DELETE) without fetching results.
 

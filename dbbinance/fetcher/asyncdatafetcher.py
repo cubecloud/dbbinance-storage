@@ -90,7 +90,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         Insert single K-line into the table
         """
         open_time, open_price, high_price, low_price, close_price, volume, close_time, \
-            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[0][:12]
+            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[:12]
 
         query = f"""
         INSERT INTO {table_name} (
@@ -783,10 +783,11 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                         if klines:
                             self.last_timeframe_datetime = datetime.datetime.fromtimestamp(klines[-1][0] / 1000,
                                                                                            tz=pytz.utc)
-                            if len(klines) > 1:
-                                result = await self.insert_klines_to_table(table_name, klines)
+                            if len(klines) == 1:
+                                result = await self.insert_kline_to_table(table_name, klines[0])
                             else:
-                                result = await self.insert_kline_to_table(table_name, klines)
+                                result = await self.insert_klines_to_table(table_name, klines)
+
                             logger.info(
                                 f"{self.__class__.__name__} #{self.idnum}: Updater - {table_name} - "
                                 f"Written timeframes: {result}/{len(klines)}. "
