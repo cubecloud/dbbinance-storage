@@ -94,27 +94,26 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         """
         return await self.insert_klines_to_table(table_name, kline)
 
-    async def insert_klines_to_table(self, table_name: str, klines: list) -> int:
+    async def insert_klines_to_table_fast(self, table_name: str, klines: list) -> int:
         """
-        Bulk insert klines using UNNEST + numpy slicing.
-
-        Returns:
-            number of inserted rows
+        Fast bulk insert K-lines using UNNEST + NumPy slicing.
+        Returns number of rows actually inserted.
         """
 
         if not klines:
             return 0
 
         try:
-            # shape: (N, 12)
             arr = np.asarray(klines, dtype=object)
 
-            # timestamps ms -> datetime UTC
-            open_time = (arr[:, 0].astype(np.int64) // 1000).astype("datetime64[s]").astype(object)
+            # Process timestamps (ms -> datetime UTC) in one pass
+            open_time = []
+            close_time = []
+            for ts_open, ts_close in arr[:, [0, 6]]:
+                open_time.append(datetime.datetime.fromtimestamp(int(ts_open) / 1000, tz=timezone.utc))
+                close_time.append(datetime.datetime.fromtimestamp(int(ts_close) / 1000, tz=timezone.utc))
 
-            close_time = (arr[:, 6].astype(np.int64) // 1000).astype("datetime64[s]").astype(object)
-
-            # numeric columns
+            # Numeric/int columns: convert to appropriate dtype but keep as NumPy arrays
             open_ = arr[:, 1].astype(np.float64)
             high = arr[:, 2].astype(np.float64)
             low = arr[:, 3].astype(np.float64)
@@ -130,8 +129,27 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             query = f"""
             WITH inserted AS (
                 INSERT INTO {table_name} (
+                    open_time, open, high, low, close, volume, close_time,
+                    quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored
+                )
+                SELECT *
+                FROM unnest(
+                    $1::timestamptz[],
+                    $2::float8[], $3::float8[], $4::float8[], $5::float8[], $6::float8[],
+                    $7::timestamptz[],
+                    $8::float8[], $9::int[], $10::float8[], $11::float8[], $12::float8[]
+                )
+                ON CONFLICT (open_time) DO NOTHING
+                RETURNING 1
+            )
+            SELECT COUNT(*) FROM inserted;
+            """
+
+            async with AsyncPool(self.pool) as conn:
+                inserted_count = await conn.fetchval(
+                    query,
                     open_time,
-                    open,
+                    open_,
                     high,
                     low,
                     close,
@@ -143,50 +161,13 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
                     taker_buy_quote,
                     ignored
                 )
-                SELECT *
-                FROM unnest(
-                    $1::timestamptz[],
-                    $2::float8[],
-                    $3::float8[],
-                    $4::float8[],
-                    $5::float8[],
-                    $6::float8[],
-                    $7::timestamptz[],
-                    $8::float8[],
-                    $9::int[],
-                    $10::float8[],
-                    $11::float8[],
-                    $12::float8[]
-                )
-                ON CONFLICT (open_time) DO NOTHING
-                RETURNING 1
-            )
-            SELECT COUNT(*) FROM inserted;
-            """
 
-            async with AsyncPool(self.pool) as conn:
-                inserted_count = await conn.fetchval(
-                    query,
-                    open_time.tolist(),
-                    open_.tolist(),
-                    high.tolist(),
-                    low.tolist(),
-                    close.tolist(),
-                    volume.tolist(),
-                    close_time.tolist(),
-                    quote_asset_volume.tolist(),
-                    trades.tolist(),
-                    taker_buy_base.tolist(),
-                    taker_buy_quote.tolist(),
-                    ignored.tolist(),
-                )
-
-            return int(inserted_count or 0)
+            inserted_count = int(inserted_count or 0)
+            logger.info(f"{self.__class__.__name__}: Inserted {inserted_count}/{len(klines)} K-lines into {table_name}")
+            return inserted_count
 
         except Exception:
-            logger.exception(
-                f"{self.__class__.__name__}: error inserting klines into '{table_name}'"
-            )
+            logger.exception(f"{self.__class__.__name__}: Error inserting K-lines into '{table_name}'")
             raise
 
     def logger_debug(self, msg):
