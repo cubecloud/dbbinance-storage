@@ -85,92 +85,107 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
 
         logger.debug(f"{self.__class__.__name__}: Created table '{table_name}' with indexes")
 
-    async def insert_kline_to_table(self, table_name: str, kline: list):
+    async def insert_kline_to_table(self, table_name: str, kline: list) -> int:
         """
-        Insert single K-line into the table
-        """
-        open_time, open_price, high_price, low_price, close_price, volume, close_time, \
-            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[:12]
+        Bulk insert klines using UNNEST + numpy slicing.
 
-        query = f"""
-        INSERT INTO {table_name} (
-            open_time, open, high, low, close, volume, close_time,
-            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-        ON CONFLICT (open_time) DO NOTHING;
+        Returns:
+            number of inserted rows
         """
+        return await self.insert_klines_to_table(table_name, kline)
 
-        await self.asyncdb_mgr.modify_query(query, (
-            datetime.datetime.fromtimestamp(open_time / 1000, tz=timezone.utc),
-            float(open_price), float(high_price), float(low_price), float(close_price), float(volume),
-            datetime.datetime.fromtimestamp(close_time / 1000, tz=timezone.utc),
-            float(quote_asset_volume), int(trades), float(taker_buy_base), float(taker_buy_quote), float(ignored)
-        ))
-
-    async def insert_klines_to_table(self, table_name: str, klines: list):
+    async def insert_klines_to_table(self, table_name: str, klines: list) -> int:
         """
-        Bulk insert klines using UNNEST (fast path).
-        open_time / close_time -> TIMESTAMPTZ (UTC)
+        Bulk insert klines using UNNEST + numpy slicing.
+
+        Returns:
+            number of inserted rows
         """
 
         if not klines:
-            return
+            return 0
 
         try:
+            # shape: (N, 12)
             arr = np.asarray(klines, dtype=object)
 
-            # ---- timestamps (ms -> UTC datetime) ----
-            open_times = [datetime.datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-                          for ts in arr[:, 0]
-                          ]
-            close_times = [datetime.datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-                           for ts in arr[:, 6]
-                           ]
+            # timestamps ms -> datetime UTC
+            open_time = (arr[:, 0].astype(np.int64) // 1000).astype("datetime64[s]").astype(object)
 
-            sql_query = f"""
-            INSERT INTO {table_name} (
-                open_time, open, high, low, close, volume, close_time,
-                quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored
+            close_time = (arr[:, 6].astype(np.int64) // 1000).astype("datetime64[s]").astype(object)
+
+            # numeric columns
+            open_ = arr[:, 1].astype(np.float64)
+            high = arr[:, 2].astype(np.float64)
+            low = arr[:, 3].astype(np.float64)
+            close = arr[:, 4].astype(np.float64)
+            volume = arr[:, 5].astype(np.float64)
+
+            quote_asset_volume = arr[:, 7].astype(np.float64)
+            trades = arr[:, 8].astype(np.int32)
+            taker_buy_base = arr[:, 9].astype(np.float64)
+            taker_buy_quote = arr[:, 10].astype(np.float64)
+            ignored = arr[:, 11].astype(np.float64)
+
+            query = f"""
+            WITH inserted AS (
+                INSERT INTO {table_name} (
+                    open_time,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    close_time,
+                    quote_asset_volume,
+                    trades,
+                    taker_buy_base,
+                    taker_buy_quote,
+                    ignored
+                )
+                SELECT *
+                FROM unnest(
+                    $1::timestamptz[],
+                    $2::float8[],
+                    $3::float8[],
+                    $4::float8[],
+                    $5::float8[],
+                    $6::float8[],
+                    $7::timestamptz[],
+                    $8::float8[],
+                    $9::int[],
+                    $10::float8[],
+                    $11::float8[],
+                    $12::float8[]
+                )
+                ON CONFLICT (open_time) DO NOTHING
+                RETURNING 1
             )
-            SELECT *
-            FROM unnest(
-                $1::timestamptz[],
-                $2::float8[],
-                $3::float8[],
-                $4::float8[],
-                $5::float8[],
-                $6::float8[],
-                $7::timestamptz[],
-                $8::float8[],
-                $9::int[],
-                $10::float8[],
-                $11::float8[],
-                $12::float8[]
-            )
-            ON CONFLICT (open_time) DO NOTHING;
+            SELECT COUNT(*) FROM inserted;
             """
 
             async with AsyncPool(self.pool) as conn:
-                await conn.execute(
-                    sql_query,
-                    open_times,
-                    arr[:, 1].astype(np.float64).tolist(),
-                    arr[:, 2].astype(np.float64).tolist(),
-                    arr[:, 3].astype(np.float64).tolist(),
-                    arr[:, 4].astype(np.float64).tolist(),
-                    arr[:, 5].astype(np.float64).tolist(),
-                    close_times,
-                    arr[:, 7].astype(np.float64).tolist(),
-                    arr[:, 8].astype(np.int32).tolist(),
-                    arr[:, 9].astype(np.float64).tolist(),
-                    arr[:, 10].astype(np.float64).tolist(),
-                    arr[:, 11].astype(np.float64).tolist(),
+                inserted_count = await conn.fetchval(
+                    query,
+                    open_time.tolist(),
+                    open_.tolist(),
+                    high.tolist(),
+                    low.tolist(),
+                    close.tolist(),
+                    volume.tolist(),
+                    close_time.tolist(),
+                    quote_asset_volume.tolist(),
+                    trades.tolist(),
+                    taker_buy_base.tolist(),
+                    taker_buy_quote.tolist(),
+                    ignored.tolist(),
                 )
 
-        except Exception as e:
+            return int(inserted_count or 0)
+
+        except Exception:
             logger.exception(
-                f"{self.__class__.__name__}: "
-                f"failed bulk insert into '{table_name}', rows={len(klines)}"
+                f"{self.__class__.__name__}: error inserting klines into '{table_name}'"
             )
             raise
 
