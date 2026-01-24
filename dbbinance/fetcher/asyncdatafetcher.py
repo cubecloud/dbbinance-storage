@@ -104,8 +104,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             return 0
 
         try:
-            arr = np.asarray(klines, dtype=object)
-
+            arr = np.atleast_2d(klines).astype(dtype=object)
             # Process timestamps (ms -> datetime UTC) in one pass
             open_time = []
             close_time = []
@@ -163,7 +162,6 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
                 )
 
             inserted_count = int(inserted_count or 0)
-            logger.info(f"{self.__class__.__name__}: Inserted {inserted_count}/{len(klines)} K-lines into {table_name}")
             return inserted_count
 
         except Exception:
