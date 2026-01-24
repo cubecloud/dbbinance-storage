@@ -94,7 +94,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         """
         return await self.insert_klines_to_table(table_name, kline)
 
-    async def insert_klines_to_table_fast(self, table_name: str, klines: list) -> int:
+    async def insert_klines_to_table(self, table_name: str, klines: list) -> int:
         """
         Fast bulk insert K-lines using UNNEST + NumPy slicing.
         Returns number of rows actually inserted.
