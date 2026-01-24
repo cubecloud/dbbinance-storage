@@ -90,7 +90,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         Insert single K-line into the table
         """
         open_time, open_price, high_price, low_price, close_price, volume, close_time, \
-            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[:12]
+            quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[0][:12]
 
         query = f"""
         INSERT INTO {table_name} (
@@ -201,37 +201,6 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             logger.error(f"{self.__class__.__name__}: {e}")
         # fallback
         return int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
-
-    # async def is_duplicates_exists(self, table_name: str, show=True) -> bool:
-    #     query = f"""
-    #     SELECT open_time, COUNT(*)
-    #     FROM {table_name}
-    #     GROUP BY open_time
-    #     HAVING COUNT(*) > 1;
-    #     """
-    #     duplicates = await self.asyncdb_mgr.select_query(query)
-    #     if duplicates and show:
-    #         logger.warning(f"{self.__class__.__name__}: Duplicates found")
-    #         for row in duplicates:
-    #             logger.warning(f"{row}")
-    #     return bool(duplicates)
-    #
-    # async def drop_duplicates_rows(self, table_name: str):
-    #     query = f"""
-    #     DELETE FROM {table_name}
-    #     WHERE id IN (
-    #         SELECT id
-    #         FROM (
-    #             SELECT id,
-    #                    ROW_NUMBER() OVER(PARTITION BY open_time ORDER BY id) AS row_num
-    #             FROM {table_name}
-    #         ) t
-    #         WHERE t.row_num > 1
-    #     );
-    #     """
-    #     if not await self.asyncdb_mgr.modify_query(query):
-    #         logger.warning(f"{self.__class__.__name__}: Can't drop duplicates")
-
 
 class DataRepair:
     def __init__(self, client_cls: Client):
@@ -808,8 +777,7 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                         if klines:
                             self.last_timeframe_datetime = datetime.datetime.fromtimestamp(klines[-1][0] / 1000,
                                                                                            tz=pytz.utc)
-                            if klines > 1:
-
+                            if len(klines) > 1:
                                 result = await self.insert_klines_to_table(table_name, klines)
                             else:
                                 result = await self.insert_kline_to_table(table_name, klines)
