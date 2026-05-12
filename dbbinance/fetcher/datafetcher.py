@@ -21,13 +21,78 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.81
+__version__ = 0.82  # schema-agnostic open_time (BIGINT or TIMESTAMPTZ)
 
 logger = logging.getLogger()
 
 logger.setLevel(logging.INFO)
 
 load_dotenv(find_dotenv())
+
+
+# ----------------------------------------------------------------------
+# Schema detection helpers — open_time may be BIGINT (legacy Unix-ms) or
+# TIMESTAMPTZ (new schema). Methods below adapt at runtime so the same
+# code works against both without consumer changes.
+# ----------------------------------------------------------------------
+
+BIGINT = "bigint"
+TIMESTAMPTZ = "timestamp with time zone"
+
+
+class _SchemaCache:
+    """Per-process cache of open_time column data_type per (db_mgr, table).
+
+    Schema does not change at runtime in normal operation; one
+    information_schema lookup per (manager, table) is sufficient.
+    """
+
+    _types: dict = {}
+
+    @classmethod
+    def get(cls, db_mgr, table_name: str) -> str:
+        key = (id(db_mgr), table_name)
+        if key not in cls._types:
+            query = sql.SQL(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = %s AND column_name = 'open_time'"
+            )
+            result = db_mgr.single_select_query(query, (table_name,))
+            if result and result[0]:
+                cls._types[key] = str(result[0]).lower()
+            else:
+                # Conservative default: assume the new schema.
+                cls._types[key] = TIMESTAMPTZ
+        return cls._types[key]
+
+    @classmethod
+    def invalidate(cls, db_mgr=None, table_name: Optional[str] = None) -> None:
+        if db_mgr is None and table_name is None:
+            cls._types.clear()
+            return
+        keep = {}
+        for k, v in cls._types.items():
+            if db_mgr is not None and k[0] == id(db_mgr):
+                continue
+            if table_name is not None and k[1] == table_name:
+                continue
+            keep[k] = v
+        cls._types = keep
+
+
+def _open_time_result_to_ms(v: Any) -> int:
+    """Normalize MIN/MAX(open_time) result to int Unix milliseconds.
+
+    BIGINT column returns int(ms); TIMESTAMPTZ column returns
+    datetime.datetime. Accept both, return int.
+    """
+    if isinstance(v, (int, float)):
+        return int(v)
+    if hasattr(v, "timestamp"):
+        return int(v.timestamp() * 1000)
+    raise TypeError(
+        f"Cannot convert open_time result of type {type(v).__name__} to ms"
+    )
 
 
 def ceil_time(dt=None, ceil_to='1h') -> datetime.datetime:
@@ -217,19 +282,23 @@ class PostgreSQLDatabase(SQLMeta):
     # ------------------------------------------------------------------
     @handle_errors
     def get_min_open_time(self, table_name: str) -> int:
+        """Schema-agnostic: handles BIGINT (int ms) and TIMESTAMPTZ (datetime).
+        Always returns int Unix-ms — preserves the public contract."""
         query = sql.SQL("SELECT MIN(open_time) FROM {}").format(sql.Identifier(table_name))
         result = self.db_mgr.single_select_query(query)
-        if result and result[0]:
-            return int(result[0].timestamp() * 1000)
+        if result and result[0] is not None:
+            return _open_time_result_to_ms(result[0])
         default = datetime.datetime(2017, 1, 1, tzinfo=timezone.utc)
         return int(default.timestamp() * 1000)
 
     @handle_errors
     def get_max_open_time(self, table_name: str) -> int:
+        """Schema-agnostic: handles BIGINT (int ms) and TIMESTAMPTZ (datetime).
+        Always returns int Unix-ms — preserves the public contract."""
         query = sql.SQL("SELECT MAX(open_time) FROM {}").format(sql.Identifier(table_name))
         result = self.db_mgr.single_select_query(query)
-        if result and result[0]:
-            return int(result[0].timestamp() * 1000)
+        if result and result[0] is not None:
+            return _open_time_result_to_ms(result[0])
         now = datetime.datetime.now(timezone.utc)
         return int(now.timestamp() * 1000)
 
@@ -631,16 +700,20 @@ class DataUpdaterMeta(PostgreSQLDatabase):
                           table_name: str,
                           start: Optional[Union[datetime.datetime, int, str]],
                           end: Optional[Union[datetime.datetime, int, str]]
-                          ) -> Tuple[datetime.datetime, datetime.datetime]:
-        """
-        Normalize start/end to UTC datetime objects for querying new TIMESTAMPTZ table.
+                          ) -> Tuple[Any, Any]:
+        """Normalize start/end and type-match them to the open_time column.
 
-        Returns:
-            Tuple[start_datetime_utc, end_datetime_utc]
+        BIGINT      column → Tuple[int, int]            (Unix milliseconds)
+        TIMESTAMPTZ column → Tuple[datetime, datetime]  (UTC-aware)
+
+        Matching the return type to the column type lets sql.Literal()
+        render a WHERE clause that the column actually accepts. Mixed-type
+        comparison (int literal vs TIMESTAMPTZ column, or vice versa) is
+        rejected by Postgres at parse time.
         """
 
         # -----------------------------
-        # Convert start to datetime UTC
+        # Convert start to datetime UTC (intermediate representation)
         # -----------------------------
         if isinstance(start, int):
             # assume timestamp in milliseconds
@@ -658,7 +731,7 @@ class DataUpdaterMeta(PostgreSQLDatabase):
             start_dt = datetime.datetime.fromtimestamp(self.get_min_open_time(table_name) / 1000, tz=timezone.utc)
 
         # -----------------------------
-        # Convert end to datetime UTC
+        # Convert end to datetime UTC (intermediate representation)
         # -----------------------------
         if end is None:
             end_dt = datetime.datetime.fromtimestamp(self.get_max_open_time(table_name) / 1000, tz=timezone.utc)
@@ -679,6 +752,13 @@ class DataUpdaterMeta(PostgreSQLDatabase):
         if start_dt < min_open_time:
             start_dt = min_open_time
 
+        # -----------------------------
+        # Type-match to column schema
+        # -----------------------------
+        col_type = _SchemaCache.get(self.db_mgr, table_name)
+        if col_type == BIGINT:
+            return (int(start_dt.timestamp() * 1000),
+                    int(end_dt.timestamp() * 1000))
         return start_dt, end_dt
 
     # def prepare_start_end(self,
@@ -1046,13 +1126,19 @@ class DataFetcher(DataUpdaterMeta):
                 raw_df = prepare_raw_df()
             return raw_df.copy(deep=True)
 
+        # Schema-aware unit: BIGINT column stores Unix-ms; after astype(int)
+        # in prepare_raw_df the dataframe column already holds int(ms), so
+        # pd.to_datetime must use unit='ms'. TIMESTAMPTZ column round-trips
+        # through datetime64[ns] (astype(int) gives ns since epoch), so the
+        # original unit='ns' is correct there.
+        _col_type = _SchemaCache.get(self.db_mgr, table_name)
+        _ot_unit = 'ms' if _col_type == BIGINT else 'ns'
+
         def prepare_resampled_df():
             resampled_df = get_raw_df()
 
-            # resampled_df['open_time'] = DataRepair.convert_timestamp_to_datetime(resampled_df['open_time'])
             resampled_df['open_time'] = pd.to_datetime(resampled_df['open_time'],
-                                                       unit='ns',
-                                                       infer_datetime_format=True,
+                                                       unit=_ot_unit,
                                                        utc=True,
                                                        )
             resampled_df = resampled_df.set_index('open_time', inplace=False)

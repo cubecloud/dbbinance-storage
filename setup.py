@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='dbbinance-storage',
-    version='0.88',
+    version='0.89',
     packages=find_packages(include=['dbbinance', 'dbbinance.*']),
     url='https://github.com/cubecloud/dbbinance-storage',
     license='MIT',
