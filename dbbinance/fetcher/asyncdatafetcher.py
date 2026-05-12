@@ -31,7 +31,62 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.79
+__version__ = 0.80  # schema-agnostic open_time (BIGINT or TIMESTAMPTZ) — mirrors sync v0.82
+
+
+# Match the sync module's constants so callers can branch on either.
+BIGINT = "bigint"
+TIMESTAMPTZ = "timestamp with time zone"
+
+
+def _open_time_result_to_ms(v):
+    """Normalize MIN/MAX(open_time) async fetchval result to int Unix ms.
+
+    BIGINT column → asyncpg returns int(ms); TIMESTAMPTZ → datetime.
+    Accept both, return int."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return int(v)
+    if hasattr(v, "timestamp"):
+        return int(v.timestamp() * 1000)
+    raise TypeError(
+        f"Cannot convert async open_time result of type {type(v).__name__} to ms"
+    )
+
+
+class _AsyncSchemaCache:
+    """Per-process cache of open_time column data_type per (pool, table).
+
+    Async analogue of the sync _SchemaCache. Lazily populated via
+    information_schema lookup using the pool's own connection.
+    """
+
+    _types: dict = {}
+
+    @classmethod
+    async def get(cls, pool, table_name: str) -> str:
+        key = (id(pool), table_name)
+        if key not in cls._types:
+            async with pool.acquire() as conn:
+                row = await conn.fetchval(
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_name = $1 AND column_name = 'open_time'",
+                    table_name,
+                )
+            cls._types[key] = (str(row).lower() if row else TIMESTAMPTZ)
+        return cls._types[key]
+
+    @classmethod
+    def invalidate(cls, pool=None, table_name=None):
+        if pool is None and table_name is None:
+            cls._types.clear()
+            return
+        cls._types = {
+            k: v for k, v in cls._types.items()
+            if not (pool is not None and k[0] == id(pool))
+            and not (table_name is not None and k[1] == table_name)
+        }
 
 logger = logging.getLogger()
 
@@ -173,13 +228,15 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             logger.debug(msg)
 
     async def get_min_open_time(self, table_name: str, retry=7) -> int:
+        """Schema-agnostic: accepts int (BIGINT) or datetime (TIMESTAMPTZ)
+        from asyncpg. Always returns int Unix-ms — public contract preserved."""
         try:
             query = f"SELECT MIN(open_time) FROM {table_name}"
             for _ in range(retry + 1):
                 async with AsyncPool(self.pool) as conn:
                     min_open_time = await conn.fetchval(query)
                     if min_open_time is not None:
-                        return int(min_open_time.timestamp() * 1000)
+                        return _open_time_result_to_ms(min_open_time)
                 await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"{self.__class__.__name__}: {e}")
@@ -188,13 +245,15 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
     async def get_max_open_time(self, table_name: str, retry=7) -> int:
+        """Schema-agnostic: accepts int (BIGINT) or datetime (TIMESTAMPTZ)
+        from asyncpg. Always returns int Unix-ms — public contract preserved."""
         try:
             query = f"SELECT MAX(open_time) FROM {table_name}"
             for _ in range(retry + 1):
                 async with AsyncPool(self.pool) as conn:
                     max_open_time = await conn.fetchval(query)
                     if max_open_time is not None:
-                        return int(max_open_time.timestamp() * 1000)
+                        return _open_time_result_to_ms(max_open_time)
                 await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"{self.__class__.__name__}: {e}")
@@ -606,16 +665,17 @@ class AsyncDataUpdaterMeta(AsyncPostgreSQLDatabase):
                                 table_name: str,
                                 start: Optional[Union[datetime.datetime, int, str]],
                                 end: Optional[Union[datetime.datetime, int, str]]
-                                ) -> Tuple[datetime.datetime, datetime.datetime]:
-        """
-        Normalize start/end to UTC datetime objects for querying new TIMESTAMPTZ table.
+                                ) -> Tuple[Any, Any]:
+        """Normalize and type-match (start, end) to the open_time column.
 
-        Returns:
-            Tuple[start_datetime_utc, end_datetime_utc]
-        """
+        BIGINT      column → Tuple[int, int]            (Unix milliseconds)
+        TIMESTAMPTZ column → Tuple[datetime, datetime]  (UTC-aware)
 
+        Matching the return type to the column type lets the caller pass
+        the tuple as positional asyncpg parameters without explicit casts.
+        """
         # -----------------------------
-        # Convert start to datetime UTC
+        # Convert start to datetime UTC (intermediate representation)
         # -----------------------------
         if isinstance(start, int):
             # assume timestamp in milliseconds
@@ -623,20 +683,23 @@ class AsyncDataUpdaterMeta(AsyncPostgreSQLDatabase):
         elif isinstance(start, str):
             start_dt = datetime.datetime.strptime(start, Constants.default_datetime_format).replace(tzinfo=timezone.utc)
         elif isinstance(start, datetime.datetime):
-            # force UTC
             if start.tzinfo is None:
                 start_dt = start.replace(tzinfo=timezone.utc)
             else:
                 start_dt = start.astimezone(timezone.utc)
         else:
             # None → use table min time
-            start_dt = datetime.datetime.fromtimestamp(await self.get_min_open_time(table_name) / 1000, tz=timezone.utc)
+            start_dt = datetime.datetime.fromtimestamp(
+                await self.get_min_open_time(table_name) / 1000, tz=timezone.utc,
+            )
 
         # -----------------------------
-        # Convert end to datetime UTC
+        # Convert end to datetime UTC (intermediate representation)
         # -----------------------------
         if end is None:
-            end_dt = datetime.datetime.fromtimestamp(await self.get_max_open_time(table_name) / 1000, tz=timezone.utc)
+            end_dt = datetime.datetime.fromtimestamp(
+                await self.get_max_open_time(table_name) / 1000, tz=timezone.utc,
+            )
         elif isinstance(end, int):
             end_dt = datetime.datetime.fromtimestamp(end / 1000, tz=timezone.utc)
         elif isinstance(end, str):
@@ -650,11 +713,19 @@ class AsyncDataUpdaterMeta(AsyncPostgreSQLDatabase):
         # -----------------------------
         # Ensure start >= min_open_time
         # -----------------------------
-        min_open_time = datetime.datetime.fromtimestamp(await self.get_min_open_time(table_name) / 1000,
-                                                        tz=timezone.utc)
+        min_open_time = datetime.datetime.fromtimestamp(
+            await self.get_min_open_time(table_name) / 1000, tz=timezone.utc,
+        )
         if start_dt < min_open_time:
             start_dt = min_open_time
 
+        # -----------------------------
+        # Type-match to column schema
+        # -----------------------------
+        col_type = await _AsyncSchemaCache.get(self.pool, table_name)
+        if col_type == BIGINT:
+            return (int(start_dt.timestamp() * 1000),
+                    int(end_dt.timestamp() * 1000))
         return start_dt, end_dt
 
 
