@@ -9,8 +9,12 @@ logger = logging.getLogger()
 
 logger.setLevel(logging.INFO)
 
-secure_key = Secure()
-_postgresql_user, _postgresql_password = secure_key.get_username_password('PSGSQL', use_env_salt=True)
+try:
+    secure_key = Secure()
+    _postgresql_user, _postgresql_password = secure_key.get_username_password('PSGSQL', use_env_salt=True)
+except Exception:
+    _postgresql_user = os.getenv("PSGSQL_USERNAME", "")
+    _postgresql_password = os.getenv("PSGSQL_PASSWORD", "")
 
 
 # Decorator to initialize the HOST attribute upon class creation
