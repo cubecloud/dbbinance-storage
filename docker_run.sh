@@ -5,7 +5,7 @@
 #   BINANCE_KEY.env  (BINANCE_KEY salt phrase)
 #   PSGSQLKEYS.env   (encrypted DB USERNAME/PASSWORD + IV)
 #   PSGSQL_KEY.env   (PSGSQL_KEY salt phrase)
-cat *.env > .temp && sudo docker run \
+cat *.env > .temp && sudo docker run -d \
     --cpu-shares 128 \
     --env-file=.temp \
     --net=host \
