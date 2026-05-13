@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.82  # schema-agnostic open_time (BIGINT or TIMESTAMPTZ)
+__version__ = 0.83  # Timestamp-native open_time pipeline for TIMESTAMPTZ schema
 
 logger = logging.getLogger()
 
@@ -1092,9 +1092,21 @@ class DataFetcher(DataUpdaterMeta):
                     raw_data = cur.fetchall()
                 return raw_data
 
+        # Resolve column schema once — used by prepare_raw_df / prepare_resampled_df.
+        _col_type = _SchemaCache.get(self.db_mgr, table_name)
+        _ot_unit = 'ms' if _col_type == BIGINT else 'ns'
+
         def prepare_raw_df():
             _df = pd.DataFrame(fetch_raw_data(), columns=list(use_cols))
             _df = _df.astype(use_dtypes)
+            # Stage D / TIMESTAMPTZ schema: caller may pass use_dtypes
+            # with 'open_time': int (legacy ohlcv_dtypes), which casts
+            # tz-aware datetime → int64-ns and breaks downstream
+            # .loc[Timestamp:Timestamp] cache subset. Restore native
+            # datetime64[ns, UTC] so the cache index stays Timestamp-typed
+            # end-to-end (matches the TIMESTAMPTZ column).
+            if _col_type == TIMESTAMPTZ:
+                _df['open_time'] = pd.to_datetime(_df['open_time'], unit='ns', utc=True)
             _df = _df.sort_values(by=['open_time']).set_index('open_time', inplace=False, drop=False)
             return _df
 
@@ -1126,21 +1138,16 @@ class DataFetcher(DataUpdaterMeta):
                 raw_df = prepare_raw_df()
             return raw_df.copy(deep=True)
 
-        # Schema-aware unit: BIGINT column stores Unix-ms; after astype(int)
-        # in prepare_raw_df the dataframe column already holds int(ms), so
-        # pd.to_datetime must use unit='ms'. TIMESTAMPTZ column round-trips
-        # through datetime64[ns] (astype(int) gives ns since epoch), so the
-        # original unit='ns' is correct there.
-        _col_type = _SchemaCache.get(self.db_mgr, table_name)
-        _ot_unit = 'ms' if _col_type == BIGINT else 'ns'
-
         def prepare_resampled_df():
             resampled_df = get_raw_df()
 
-            resampled_df['open_time'] = pd.to_datetime(resampled_df['open_time'],
-                                                       unit=_ot_unit,
-                                                       utc=True,
-                                                       )
+            # BIGINT path: column is int(ms) after astype, convert to datetime.
+            # TIMESTAMPTZ path: already datetime64[ns, UTC] (see prepare_raw_df).
+            if _col_type == BIGINT:
+                resampled_df['open_time'] = pd.to_datetime(resampled_df['open_time'],
+                                                           unit=_ot_unit,
+                                                           utc=True,
+                                                           )
             resampled_df = resampled_df.set_index('open_time', inplace=False)
 
             agg_dict = self._get_agg_dict(use_cols)
