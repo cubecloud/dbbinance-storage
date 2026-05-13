@@ -43,4 +43,4 @@ ENV PATH="/opt/conda/envs/${conda_env}/bin:${PATH}"
 ENV PYTHONUNBUFFERED=1
 
 # Start updater
-CMD ["bash", "-c", "./start.sh"]
+CMD ["bash", "./start.sh"]
