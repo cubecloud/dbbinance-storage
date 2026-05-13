@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.82  # repair_index kline open_time: unit='ns' -> 'ms' (binance API contract)
+__version__ = 0.83  # fix NameError: use _AsyncSchemaCache (was _SchemaCache regression in 0.81)
 
 
 # Match the sync module's constants so callers can branch on either.
@@ -1029,7 +1029,7 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
 
         # Resolve column schema once — used by prepare_raw_df / prepare_resampled_df.
-        _col_type = await _SchemaCache.get(self.pool, table_name)
+        _col_type = await _AsyncSchemaCache.get(self.pool, table_name)
 
         async def fetch_raw_data():
             query = f"""
