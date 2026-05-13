@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.80  # schema-agnostic open_time (BIGINT or TIMESTAMPTZ) — mirrors sync v0.82
+__version__ = 0.81  # Timestamp-native open_time pipeline — mirrors sync v0.83
 
 
 # Match the sync module's constants so callers can branch on either.
@@ -1024,6 +1024,9 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
         # prepare the start and end timestamps, convert them to datetime if necessary
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
 
+        # Resolve column schema once — used by prepare_raw_df / prepare_resampled_df.
+        _col_type = await _SchemaCache.get(self.pool, table_name)
+
         async def fetch_raw_data():
             query = f"""
                 SELECT {', '.join(use_cols)}
@@ -1040,6 +1043,10 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
             _df = await fetch_raw_data()
             _df = pd.DataFrame(_df, columns=list(use_cols))
             _df = _df.astype(use_dtypes)
+            # Mirror sync: keep open_time as datetime64[ns, UTC] for
+            # TIMESTAMPTZ schema so cache stores Timestamp-typed index.
+            if _col_type == TIMESTAMPTZ:
+                _df['open_time'] = pd.to_datetime(_df['open_time'], unit='ns', utc=True)
             _df = _df.sort_values(by=['open_time']).set_index('open_time', inplace=False, drop=False)
             return _df
 
@@ -1061,9 +1068,11 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
 
         async def prepare_resampled_df():
             resampled_df = await get_raw_df()
-            # convert timestamps to datetime objects
-            resampled_df['open_time'] = pd.to_datetime(resampled_df['open_time'], unit='ns', infer_datetime_format=True,
-                                                       utc=True, )
+            # BIGINT path: column is int(ms) after astype, convert to datetime.
+            # TIMESTAMPTZ path: already datetime64[ns, UTC] in prepare_raw_df.
+            if _col_type == BIGINT:
+                resampled_df['open_time'] = pd.to_datetime(resampled_df['open_time'],
+                                                           unit='ms', utc=True)
             resampled_df = resampled_df.set_index('open_time', inplace=False)
 
             # prepare aggregation dictionary for the 'agg' method of pandas DataFrame
