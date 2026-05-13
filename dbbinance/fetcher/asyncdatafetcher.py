@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.81  # Timestamp-native open_time pipeline — mirrors sync v0.83
+__version__ = 0.82  # repair_index kline open_time: unit='ns' -> 'ms' (binance API contract)
 
 
 # Match the sync module's constants so callers can branch on either.
@@ -490,9 +490,13 @@ class DataRepair:
                         temp_df = pd.DataFrame(kdata,
                                                columns=list(Constants.binance_cols),
                                                )
+                        # Binance kline open_time is Unix MILLISECONDS (int),
+                        # per python-binance Client.get_klines docstring example
+                        # 1499040000000 == 2017-07-03 00:00:00 UTC.
+                        # Previous unit='ns' decoded it as 1970-01-01 + tiny offset
+                        # and polluted dataupdater repair flow with year-1970 rows.
                         temp_df['open_time'] = pd.to_datetime(temp_df['open_time'],
-                                                              unit='ns',
-                                                              infer_datetime_format=True,
+                                                              unit='ms',
                                                               utc=True,
                                                               )
                         # temp_df[self.open_time_col_name] = pd.to_datetime(temp_df[self.open_time_col_name],
