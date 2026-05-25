@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.84  # add pg_resample_to_timeframe (SQL-side OHLCV resampling)
+__version__ = 0.85  # fix DataRepair gap-repair under TIMESTAMPTZ schema
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -388,7 +388,8 @@ class DataRepair:
             """ Convert _datetime_ of 'close_time' to timestamp format and insert back """
             data_df.insert(7, "close_time", self.convert_datetime_to_timestamp(pd.Series(close_time_dt)))
         else:
-            """ Convert _datetime_ of 'open_time' to timestamp format """
+            """ open_time сейчас индекс — вернуть его колонкой, затем в timestamp """
+            data_df = data_df.reset_index()
             data_df["open_time"] = self.convert_datetime_to_timestamp(data_df["open_time"])
             self.ts_start_end_open_time_after = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
             logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' before: "
@@ -495,16 +496,13 @@ class DataRepair:
                         # 1499040000000 == 2017-07-03 00:00:00 UTC.
                         # Previous unit='ns' decoded it as 1970-01-01 + tiny offset
                         # and polluted dataupdater repair flow with year-1970 rows.
+                        # tz-aware UTC, чтобы совпадать с tz-aware индексом data_df
+                        # (TIMESTAMPTZ). Второй to_datetime с format здесь не нужен и
+                        # ломал бы tz-aware Series.
                         temp_df['open_time'] = pd.to_datetime(temp_df['open_time'],
                                                               unit='ms',
                                                               utc=True,
                                                               )
-                        # temp_df[self.open_time_col_name] = pd.to_datetime(temp_df[self.open_time_col_name],
-                        #                                                   unit='ms')
-                        temp_df[self.open_time_col_name] = pd.to_datetime(temp_df[self.open_time_col_name],
-                                                                          # unit='ms',
-                                                                          infer_datetime_format=True,
-                                                                          format=Constants.default_datetime_format)
 
                         temp_df[self.open_time_col_name] = self.datetime_round(temp_df[self.open_time_col_name],
                                                                                frequency)
@@ -517,7 +515,7 @@ class DataRepair:
                         end_flag = False
 
                         try:
-                            pd_infer_freq = pd.infer_freq(temp_df[self.open_time_col_name])
+                            pd_infer_freq = pd.infer_freq(pd.DatetimeIndex(temp_df[self.open_time_col_name]))
                         except ValueError:
                             pd_infer_freq = None
 
@@ -531,7 +529,7 @@ class DataRepair:
                             temp_df = temp_df.sort_values(by=[self.open_time_col_name])
                             start_flag = True
                         try:
-                            pd_infer_freq = pd.infer_freq(temp_df[self.open_time_col_name])
+                            pd_infer_freq = pd.infer_freq(pd.DatetimeIndex(temp_df[self.open_time_col_name]))
                         except ValueError:
                             pd_infer_freq = None
 
@@ -553,7 +551,9 @@ class DataRepair:
                         _to_add_set, _to_delete_set = self.get_add_delete_sets(temp_df,
                                                                                frequency=frequency)
                         if _to_add_set or _to_delete_set:
-                            double_checked_df = self.repair_index(to_add_set, to_delete_set, temp_df)
+                            # repair_index возвращает (df, to_add, to_delete) — распаковать,
+                            # и использовать внутренние (перепроверенные) множества.
+                            double_checked_df, _, _ = self.repair_index(_to_add_set, _to_delete_set, temp_df)
                         else:
                             double_checked_df = temp_df
 
@@ -619,6 +619,11 @@ class DataRepair:
                         dict_name = dict_name[0].lower()
                     col_dtype = Constants.newsql_dtypes.get(dict_name, None)
                     if col_name == "id":
+                        col_dtype = "int64"
+                    if col_name in ("open_time", "close_time"):
+                        # after_preparation отдаёт их как Unix-ms int (формат, который
+                        # ждёт insert_klines_to_table). Каст в datetime64[ns] здесь
+                        # переинтерпретировал бы ms как ns и портил бы значение (1970).
                         col_dtype = "int64"
                     data_df[col_name] = data_df[col_name].astype(col_dtype)
         else:
@@ -941,8 +946,10 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                         f"'{table_name}' - Database repaired. Saving repaired data back to database.")
             logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
                          f"'{table_name}' - Start saving repaired data back to database: {start_time}")
-            data_df = data_df.drop(columns="id")
-            result = await self.insert_klines_to_table(table_name, data_df.as_list())
+            # async-поток читает по newsql_cols (без 'id'); errors='ignore' — на случай,
+            # если 'id' всё же присутствует.
+            data_df = data_df.drop(columns="id", errors="ignore")
+            result = await self.insert_klines_to_table(table_name, data_df.values.tolist())
             logger.debug(f"{self.__class__.__name__} #{self.idnum}:'{table_name}' - data saved. "
                          f"Written qty: {result}. ETA: {datetime.datetime.now(timezone.utc) - start_time}")
         else:
