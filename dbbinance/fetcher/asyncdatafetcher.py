@@ -1014,6 +1014,67 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
                 actual_agg_dict.update({col_name: self.default_agg_dict.get(col_name, None)})
         return actual_agg_dict
 
+    @staticmethod
+    def _timeframe_to_ms(to_timeframe: str) -> int:
+        return get_timeframe_bins(to_timeframe) * 60_000
+
+    def _build_pg_resample_query(
+        self,
+        col_type: str,
+        table_name: str,
+        freq_ms: int,
+        use_cols: tuple,
+        agg_dict: dict,
+    ) -> str:
+        _AGG_SQL = {
+            'first': 'MAX(CASE WHEN rn_asc=1 THEN {col} END)',
+            'last':  'MAX(CASE WHEN rn_desc=1 THEN {col} END)',
+            'max':   'MAX({col})',
+            'min':   'MIN({col})',
+            'sum':   'SUM({col})',
+        }
+
+        data_cols = ', '.join(c for c in use_cols if c != 'open_time')
+
+        if col_type == BIGINT:
+            bin_formula = (
+                f"$1 + ((open_time - $1 + {freq_ms} - 1) / {freq_ms}) * {freq_ms}"
+            )
+        else:
+            bin_formula = (
+                f"$1 + (CEIL(EXTRACT(EPOCH FROM (open_time - $1)) * 1000.0 "
+                f"/ {freq_ms}))::bigint * interval '{freq_ms} milliseconds'"
+            )
+
+        agg_exprs = ',\n    '.join(
+            _AGG_SQL[fn].format(col=col)
+            for col, fn in agg_dict.items()
+        )
+
+        return f"""
+WITH pre AS (
+    SELECT
+        {bin_formula} AS bin_label,
+        open_time,
+        {data_cols}
+    FROM {table_name}
+    WHERE open_time >= $1 AND open_time <= $2
+),
+binned AS (
+    SELECT
+        bin_label, open_time, {data_cols},
+        ROW_NUMBER() OVER (PARTITION BY bin_label ORDER BY open_time ASC)  AS rn_asc,
+        ROW_NUMBER() OVER (PARTITION BY bin_label ORDER BY open_time DESC) AS rn_desc
+    FROM pre
+)
+SELECT
+    bin_label AS open_time,
+    {agg_exprs}
+FROM binned
+GROUP BY bin_label
+ORDER BY bin_label
+"""
+
     async def resample_to_timeframe(self,
                                     table_name: str,
                                     start: Union[datetime.datetime, int],
