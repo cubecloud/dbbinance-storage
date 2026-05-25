@@ -1038,11 +1038,11 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
 
         if col_type == BIGINT:
             bin_formula = (
-                f"$1 + ((open_time - $1 + {freq_ms} - 1) / {freq_ms}) * {freq_ms}"
+                f"$1::bigint + ((open_time - $1::bigint + {freq_ms} - 1) / {freq_ms}) * {freq_ms}"
             )
         else:
             bin_formula = (
-                f"$1 + (CEIL(EXTRACT(EPOCH FROM (open_time - $1)) * 1000.0 "
+                f"$1::timestamptz + (CEIL(EXTRACT(EPOCH FROM (open_time - $1::timestamptz)) * 1000.0 "
                 f"/ {freq_ms}))::bigint * interval '{freq_ms} milliseconds'"
             )
 
@@ -1187,6 +1187,74 @@ ORDER BY bin_label
         data_df = await get_resampled_df()
 
         return data_df.copy(deep=True)
+
+    async def pg_resample_to_timeframe(
+        self,
+        table_name: str,
+        start: Union[datetime.datetime, int],
+        end: Union[datetime.datetime, int],
+        to_timeframe: str = "1h",
+        origin: str = "start",
+        use_cols: tuple = Constants.binance_cols,
+        use_dtypes=None,
+        open_time_index: bool = True,
+        cached: bool = False,
+    ) -> pd.DataFrame:
+        start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
+        col_type = await _AsyncSchemaCache.get(self.pool, table_name)
+        freq_ms = self._timeframe_to_ms(to_timeframe)
+        agg_dict = self._get_agg_dict(use_cols)
+
+        async def fetch_and_build() -> pd.DataFrame:
+            sql = self._build_pg_resample_query(
+                col_type=col_type,
+                table_name=table_name,
+                freq_ms=freq_ms,
+                use_cols=use_cols,
+                agg_dict=agg_dict,
+            )
+            async with AsyncPool(self.pool) as conn:
+                records = await conn.fetch(sql, start_timestamp, end_timestamp)
+
+            out_cols = ['open_time'] + [c for c in use_cols if c != 'open_time']
+            df = pd.DataFrame(records, columns=out_cols)
+
+            if use_dtypes:
+                df = df.astype({c: use_dtypes[c] for c in use_dtypes if c in df.columns and c != 'open_time'})
+
+            if col_type == BIGINT:
+                df['open_time'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
+            else:
+                df['open_time'] = pd.to_datetime(df['open_time'], utc=True)
+
+            if open_time_index:
+                df = df.set_index('open_time')
+
+            return df
+
+        if cached:
+            cache_key = self.CM.get_cache_key(
+                table_name=table_name,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                timeframe=to_timeframe,
+                origin=origin,
+                open_time_index=open_time_index,
+                method='pg',
+            )
+            if cache_key in self.CM.cache:
+                logger.debug(
+                    f"{self.__class__.__name__} #{self.idnum}: "
+                    f"Return cached PG RESAMPLED data: {table_name} / "
+                    f"{start_timestamp} - {end_timestamp}"
+                )
+                return self.CM.cache[cache_key].copy(deep=True)
+
+            df = await fetch_and_build()
+            self.CM.update_cache(key=cache_key, value=df.copy(deep=True))
+            return df.copy(deep=True)
+
+        return await fetch_and_build()
 
 
 async def main_tests():
