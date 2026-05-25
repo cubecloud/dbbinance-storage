@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.84  # add pg_resample_to_timeframe (SQL-side OHLCV resampling)
+__version__ = 0.85  # fix DataRepair gap-repair under TIMESTAMPTZ schema
 
 logger = logging.getLogger()
 
@@ -528,12 +528,10 @@ class DataRepair:
                         temp_df = pd.DataFrame(kdata,
                                                columns=list(Constants.binance_cols),
                                                )
+                        # open_time from klines is Unix-ms; make it tz-aware UTC so it
+                        # matches the TIMESTAMPTZ-derived (tz-aware) index of data_df.
                         temp_df[self.open_time_col_name] = pd.to_datetime(temp_df[self.open_time_col_name],
-                                                                          unit='ms')
-                        temp_df[self.open_time_col_name] = pd.to_datetime(temp_df[self.open_time_col_name],
-                                                                          # unit='ms',
-                                                                          infer_datetime_format=True,
-                                                                          format=Constants.default_datetime_format)
+                                                                          unit='ms', utc=True)
 
                         temp_df[self.open_time_col_name] = self.datetime_round(temp_df[self.open_time_col_name],
                                                                                frequency)
@@ -546,7 +544,7 @@ class DataRepair:
                         end_flag = False
 
                         try:
-                            pd_infer_freq = pd.infer_freq(temp_df[self.open_time_col_name])
+                            pd_infer_freq = pd.infer_freq(pd.DatetimeIndex(temp_df[self.open_time_col_name]))
                         except ValueError:
                             pd_infer_freq = None
 
@@ -560,7 +558,7 @@ class DataRepair:
                             temp_df = temp_df.sort_values(by=[self.open_time_col_name])
                             start_flag = True
                         try:
-                            pd_infer_freq = pd.infer_freq(temp_df[self.open_time_col_name])
+                            pd_infer_freq = pd.infer_freq(pd.DatetimeIndex(temp_df[self.open_time_col_name]))
                         except ValueError:
                             pd_infer_freq = None
 
@@ -582,15 +580,19 @@ class DataRepair:
                         _to_add_set, _to_delete_set = self.get_add_delete_sets(temp_df,
                                                                                frequency=frequency)
                         if _to_add_set or _to_delete_set:
-                            double_checked_df = self.repair_index(to_add_set, to_delete_set, temp_df)
+                            # repair_index returns (df, to_add, to_delete) — unpack it,
+                            # and use the inner (double-checked) sets, not the outer ones.
+                            double_checked_df, _, _ = self.repair_index(_to_add_set, _to_delete_set, temp_df)
                         else:
                             double_checked_df = temp_df
 
                         data_df_repair_window_start_row = data_df.index.get_loc(double_checked_df.index[0])
                         data_df_repair_window_end_row = data_df.index.get_loc(double_checked_df.index[-1])
 
-                        data_df.iloc[data_df_repair_window_start_row:data_df_repair_window_end_row + 1,
-                        :] = double_checked_df
+                        # Splice the real re-fetched klines in by label, touching only the
+                        # data columns so the 'id' column data_df carries is preserved
+                        # (double_checked_df has no 'id', so a positional `:` splice fails).
+                        data_df.loc[double_checked_df.index, double_checked_df.columns] = double_checked_df
 
                         current_not_loaded = int(
                             data_df.iloc[data_df_repair_window_start_row:data_df_repair_window_end_row,
@@ -649,6 +651,11 @@ class DataRepair:
                         dict_name = dict_name[0].lower()
                     col_dtype = Constants.newsql_dtypes.get(dict_name, None)
                     if col_name == "id":
+                        col_dtype = "int64"
+                    if col_name in ("open_time", "close_time"):
+                        # after_preparation emits these as Unix-ms ints (the format
+                        # insert_klines_to_table consumes). Casting to datetime64[ns]
+                        # here would reinterpret the ms value as ns and corrupt it.
                         col_dtype = "int64"
                     data_df[col_name] = data_df[col_name].astype(col_dtype)
         else:
@@ -994,7 +1001,7 @@ class DataUpdater(DataUpdaterMeta):
             logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
                          f"'{table_name}' - Start saving repaired data back to database: {start_time}")
             data_df = data_df.drop(columns="id")
-            self.insert_klines_to_table(table_name, data_df.as_list())
+            self.insert_klines_to_table(table_name, data_df.values.tolist())
             logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
                          f"'{table_name}' - data saved. ETA: {datetime.datetime.now(timezone.utc) - start_time}")
         else:
