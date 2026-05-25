@@ -12,7 +12,7 @@ from pandas import Timestamp
 from dbbinance.fetcher.constants import Constants
 from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors, sql, ThreadPool
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
-from dbbinance.fetcher.datautils import convert_timeframe_to_freq
+from dbbinance.fetcher.datautils import convert_timeframe_to_freq, get_timeframe_bins
 from collections import OrderedDict
 from dotenv import load_dotenv, find_dotenv
 
@@ -1061,6 +1061,92 @@ class DataFetcher(DataUpdaterMeta):
                 actual_agg_dict.update({col_name: self.default_agg_dict.get(col_name, None)})
         return actual_agg_dict
 
+    @staticmethod
+    def _timeframe_to_ms(to_timeframe: str) -> int:
+        return get_timeframe_bins(to_timeframe) * 60_000
+
+    def _build_pg_resample_query(
+            self,
+            col_type: str,
+            table_name: str,
+            freq_ms: int,
+            use_cols: tuple,
+            agg_dict: dict,
+            start_timestamp,
+            end_timestamp,
+    ):
+        _AGG_SQL = {
+            'first': 'MAX(CASE WHEN rn_asc=1 THEN {col} END)',
+            'last': 'MAX(CASE WHEN rn_desc=1 THEN {col} END)',
+            'max': 'MAX({col})',
+            'min': 'MIN({col})',
+            'sum': 'SUM({col})',
+        }
+
+        data_cols = ', '.join(c for c in use_cols if c != 'open_time')
+
+        _one_day_ms = 86_400_000
+        if freq_ms > _one_day_ms:
+            # Multi-day (nD, n>1): pandas uses calendar-day granularity.
+            # Formula: bin = floor((delta + freq - 1D) / freq)
+            _offset = freq_ms - _one_day_ms
+            if col_type == BIGINT:
+                bin_formula_tpl = (
+                    f"{{start_ts}}::bigint + ((open_time - {{start_ts}}::bigint + {_offset}) / {freq_ms}) * {freq_ms}"
+                )
+            else:
+                bin_formula_tpl = (
+                    f"{{start_ts}}::timestamptz + FLOOR((EXTRACT(EPOCH FROM (open_time - {{start_ts}}::timestamptz)) "
+                    f"* 1000.0 + {_offset}.0) / {freq_ms})::bigint "
+                    f"* interval '{freq_ms} milliseconds'"
+                )
+        else:
+            # Sub-day or exactly 1 day: CEIL(delta / freq) matches pandas closed='right'.
+            if col_type == BIGINT:
+                bin_formula_tpl = (
+                    f"{{start_ts}}::bigint + ((open_time - {{start_ts}}::bigint + {freq_ms} - 1) / {freq_ms}) * {freq_ms}"
+                )
+            else:
+                bin_formula_tpl = (
+                    f"{{start_ts}}::timestamptz + (CEIL(EXTRACT(EPOCH FROM (open_time - {{start_ts}}::timestamptz)) "
+                    f"* 1000.0 / {freq_ms}))::bigint * interval '{freq_ms} milliseconds'"
+                )
+
+        agg_exprs = ',\n    '.join(
+            _AGG_SQL[fn].format(col=col)
+            for col, fn in agg_dict.items()
+        )
+
+        query_template = f"""
+WITH pre AS (
+    SELECT
+        {bin_formula_tpl} AS bin_label,
+        open_time,
+        {data_cols}
+    FROM {{table_name}}
+    WHERE open_time >= {{start_ts}} AND open_time <= {{end_ts}}
+),
+binned AS (
+    SELECT
+        bin_label, open_time, {data_cols},
+        ROW_NUMBER() OVER (PARTITION BY bin_label ORDER BY open_time ASC)  AS rn_asc,
+        ROW_NUMBER() OVER (PARTITION BY bin_label ORDER BY open_time DESC) AS rn_desc
+    FROM pre
+)
+SELECT
+    bin_label AS open_time,
+    {agg_exprs}
+FROM binned
+GROUP BY bin_label
+ORDER BY bin_label
+"""
+
+        return sql.SQL(query_template).format(
+            table_name=sql.Identifier(table_name),
+            start_ts=sql.Literal(start_timestamp),
+            end_ts=sql.Literal(end_timestamp),
+        )
+
     def resample_to_timeframe(self,
                               table_name: str,
                               start: Union[datetime.datetime, int],
@@ -1190,6 +1276,78 @@ class DataFetcher(DataUpdaterMeta):
 
         data_df = get_resampled_df()
         return data_df.copy(deep=True)
+
+    def pg_resample_to_timeframe(
+            self,
+            table_name: str,
+            start: Union[datetime.datetime, int],
+            end: Union[datetime.datetime, int],
+            to_timeframe: str = "1h",
+            origin: str = "start",
+            use_cols: tuple = Constants.binance_cols,
+            use_dtypes=None,
+            open_time_index: bool = True,
+            cached: bool = False,
+    ) -> pd.DataFrame:
+        start_timestamp, end_timestamp = self.prepare_start_end(table_name, start, end)
+        col_type = _SchemaCache.get(self.db_mgr, table_name)
+        freq_ms = self._timeframe_to_ms(to_timeframe)
+        agg_dict = self._get_agg_dict(use_cols)
+
+        def fetch_and_build() -> pd.DataFrame:
+            query = self._build_pg_resample_query(
+                col_type=col_type,
+                table_name=table_name,
+                freq_ms=freq_ms,
+                use_cols=use_cols,
+                agg_dict=agg_dict,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+            )
+            with ThreadPool(self.pool) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    records = cur.fetchall()
+
+            out_cols = ['open_time'] + [c for c in use_cols if c != 'open_time']
+            df = pd.DataFrame(records, columns=out_cols)
+
+            if use_dtypes:
+                df = df.astype({c: use_dtypes[c] for c in use_dtypes if c in df.columns and c != 'open_time'})
+
+            if col_type == BIGINT:
+                df['open_time'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
+            else:
+                df['open_time'] = pd.to_datetime(df['open_time'], utc=True)
+
+            if open_time_index:
+                df = df.set_index('open_time')
+
+            return df
+
+        if cached:
+            cache_key = self.CM.get_cache_key(
+                table_name=table_name,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                timeframe=to_timeframe,
+                origin=origin,
+                open_time_index=open_time_index,
+                method='pg',
+            )
+            if cache_key in self.CM.cache:
+                logger.debug(
+                    f"{self.__class__.__name__} #{self.idnum}: "
+                    f"Return cached PG RESAMPLED data: {table_name} / "
+                    f"{start_timestamp} - {end_timestamp}"
+                )
+                return self.CM.cache[cache_key].copy(deep=True)
+
+            df = fetch_and_build()
+            self.CM.update_cache(key=cache_key, value=df.copy(deep=True))
+            return df.copy(deep=True)
+
+        return fetch_and_build()
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from dbbinance.fetcher import create_pool
 from dbbinance.fetcher import ceil_time, floor_time
 
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
-from dbbinance.fetcher.datautils import convert_timeframe_to_freq
+from dbbinance.fetcher.datautils import convert_timeframe_to_freq, get_timeframe_bins
 from collections import OrderedDict
 
 from binance.client import Client
@@ -32,7 +32,6 @@ from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
 __version__ = 0.83  # fix NameError: use _AsyncSchemaCache (was _SchemaCache regression in 0.81)
-
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -85,8 +84,9 @@ class _AsyncSchemaCache:
         cls._types = {
             k: v for k, v in cls._types.items()
             if not (pool is not None and k[0] == id(pool))
-            and not (table_name is not None and k[1] == table_name)
+               and not (table_name is not None and k[1] == table_name)
         }
+
 
 logger = logging.getLogger()
 
@@ -1014,6 +1014,85 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
                 actual_agg_dict.update({col_name: self.default_agg_dict.get(col_name, None)})
         return actual_agg_dict
 
+    @staticmethod
+    def _timeframe_to_ms(to_timeframe: str) -> int:
+        return get_timeframe_bins(to_timeframe) * 60_000
+
+    def _build_pg_resample_query(
+            self,
+            col_type: str,
+            table_name: str,
+            freq_ms: int,
+            use_cols: tuple,
+            agg_dict: dict,
+    ) -> str:
+        _AGG_SQL = {
+            'first': 'MAX(CASE WHEN rn_asc=1 THEN {col} END)',
+            'last': 'MAX(CASE WHEN rn_desc=1 THEN {col} END)',
+            'max': 'MAX({col})',
+            'min': 'MIN({col})',
+            'sum': 'SUM({col})',
+        }
+
+        data_cols = ', '.join(c for c in use_cols if c != 'open_time')
+
+        _one_day_ms = 86_400_000
+        if freq_ms > _one_day_ms:
+            # Multi-day (nD, n>1): pandas uses calendar-day granularity — the first bin
+            # covers exactly 1 calendar day [start, start+1D), subsequent bins cover n days.
+            # Formula: bin = floor((delta + freq - 1D) / freq)
+            _offset = freq_ms - _one_day_ms
+            if col_type == BIGINT:
+                bin_formula = (
+                    f"$1::bigint + ((open_time - $1::bigint + {_offset}) / {freq_ms}) * {freq_ms}"
+                )
+            else:
+                bin_formula = (
+                    f"$1::timestamptz + FLOOR((EXTRACT(EPOCH FROM (open_time - $1::timestamptz)) "
+                    f"* 1000.0 + {_offset}.0) / {freq_ms})::bigint "
+                    f"* interval '{freq_ms} milliseconds'"
+                )
+        else:
+            # Sub-day or exactly 1 day: use CEIL(delta / freq) — matches pandas closed='right'.
+            if col_type == BIGINT:
+                bin_formula = (
+                    f"$1::bigint + ((open_time - $1::bigint + {freq_ms} - 1) / {freq_ms}) * {freq_ms}"
+                )
+            else:
+                bin_formula = (
+                    f"$1::timestamptz + (CEIL(EXTRACT(EPOCH FROM (open_time - $1::timestamptz)) "
+                    f"* 1000.0 / {freq_ms}))::bigint * interval '{freq_ms} milliseconds'"
+                )
+
+        agg_exprs = ',\n    '.join(
+            _AGG_SQL[fn].format(col=col)
+            for col, fn in agg_dict.items()
+        )
+
+        return f"""
+WITH pre AS (
+    SELECT
+        {bin_formula} AS bin_label,
+        open_time,
+        {data_cols}
+    FROM {table_name}
+    WHERE open_time >= $1 AND open_time <= $2
+),
+binned AS (
+    SELECT
+        bin_label, open_time, {data_cols},
+        ROW_NUMBER() OVER (PARTITION BY bin_label ORDER BY open_time ASC)  AS rn_asc,
+        ROW_NUMBER() OVER (PARTITION BY bin_label ORDER BY open_time DESC) AS rn_desc
+    FROM pre
+)
+SELECT
+    bin_label AS open_time,
+    {agg_exprs}
+FROM binned
+GROUP BY bin_label
+ORDER BY bin_label
+"""
+
     async def resample_to_timeframe(self,
                                     table_name: str,
                                     start: Union[datetime.datetime, int],
@@ -1055,18 +1134,29 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
             return _df
 
         async def get_raw_df():
-            # check if the data is already cached
-            cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
-                                              end_timestamp=end_timestamp)
+            raw_df = None
+            if cached:
+                cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
+                                                  end_timestamp=end_timestamp)
 
-            if cached and (cache_key in self.CM.cache):
-                raw_df = self.CM.cache[cache_key]
-                print(f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
-                      f"{start_timestamp} - {end_timestamp}")
+                if cache_key in self.CM.cache:
+                    raw_df = self.CM.cache[cache_key]
+                    logger.debug(f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
+                                 f"{start_timestamp} - {end_timestamp}")
+                else:
+                    for key in self.CM.cache.keys():
+                        if (len(key) == 3) and (key[2][1] == table_name) and (start_timestamp >= key[1][1]) and (
+                                end_timestamp <= key[0][1]):
+                            raw_df = self.CM.cache[key].loc[start_timestamp:end_timestamp]
+                            logger.debug(
+                                f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data (subset): "
+                                f"{table_name} / {start_timestamp} - {end_timestamp}")
+                            break
+                    if raw_df is None:
+                        raw_df = await prepare_raw_df()
+                        self.CM.update_cache(key=cache_key, value=raw_df.copy(deep=True))
             else:
-                # if not cached, fetch the data and cache it
                 raw_df = await prepare_raw_df()
-                self.CM.update_cache(key=cache_key, value=raw_df.copy(deep=True))
 
             return raw_df.copy(deep=True)
 
@@ -1115,6 +1205,74 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
         data_df = await get_resampled_df()
 
         return data_df.copy(deep=True)
+
+    async def pg_resample_to_timeframe(
+            self,
+            table_name: str,
+            start: Union[datetime.datetime, int],
+            end: Union[datetime.datetime, int],
+            to_timeframe: str = "1h",
+            origin: str = "start",
+            use_cols: tuple = Constants.binance_cols,
+            use_dtypes=None,
+            open_time_index: bool = True,
+            cached: bool = False,
+    ) -> pd.DataFrame:
+        start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
+        col_type = await _AsyncSchemaCache.get(self.pool, table_name)
+        freq_ms = self._timeframe_to_ms(to_timeframe)
+        agg_dict = self._get_agg_dict(use_cols)
+
+        async def fetch_and_build() -> pd.DataFrame:
+            sql = self._build_pg_resample_query(
+                col_type=col_type,
+                table_name=table_name,
+                freq_ms=freq_ms,
+                use_cols=use_cols,
+                agg_dict=agg_dict,
+            )
+            async with AsyncPool(self.pool) as conn:
+                records = await conn.fetch(sql, start_timestamp, end_timestamp)
+
+            out_cols = ['open_time'] + [c for c in use_cols if c != 'open_time']
+            df = pd.DataFrame(records, columns=out_cols)
+
+            if use_dtypes:
+                df = df.astype({c: use_dtypes[c] for c in use_dtypes if c in df.columns and c != 'open_time'})
+
+            if col_type == BIGINT:
+                df['open_time'] = pd.to_datetime(df['open_time'], unit='ms', utc=True)
+            else:
+                df['open_time'] = pd.to_datetime(df['open_time'], utc=True)
+
+            if open_time_index:
+                df = df.set_index('open_time')
+
+            return df
+
+        if cached:
+            cache_key = self.CM.get_cache_key(
+                table_name=table_name,
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                timeframe=to_timeframe,
+                origin=origin,
+                open_time_index=open_time_index,
+                method='pg',
+            )
+            if cache_key in self.CM.cache:
+                logger.debug(
+                    f"{self.__class__.__name__} #{self.idnum}: "
+                    f"Return cached PG RESAMPLED data: {table_name} / "
+                    f"{start_timestamp} - {end_timestamp}"
+                )
+                return self.CM.cache[cache_key].copy(deep=True)
+
+            df = await fetch_and_build()
+            self.CM.update_cache(key=cache_key, value=df.copy(deep=True))
+            return df.copy(deep=True)
+
+        return await fetch_and_build()
 
 
 async def main_tests():

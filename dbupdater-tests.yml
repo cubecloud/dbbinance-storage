@@ -1,0 +1,31 @@
+name: dbupdater-tests
+channels:
+  - conda-forge
+  - esri
+  - jiayi_anaconda
+  - defaults
+dependencies:
+  - python>=3.9.0,<3.10.0
+  - pip>=21.0.1
+  - setuptools>=51.0.0
+  - numpy>=1.19.2,<1.30.0
+  - pandas>=1.1.5,<2.0.0
+  - asyncpg<=0.31.0
+  - python-binance==1.0.19
+  - pycryptodome~=3.11
+  - python-dotenv>=0.19.1
+  - scikit-learn>=0.23.2
+  - typing-extensions>=3.7.4
+  - pytz>=2020.4
+  - requests
+  - websockets==9.1
+  - psycopg2>=2.9.3
+  - apscheduler>=3.10.0,<3.12.0
+  - objsize>=0.7.0,<=0.7.1
+  - pytest>=7.0.0
+  - pytest-asyncio>=0.21.0
+  - pip:
+      - git+https://github.com/cubecloud/dbbinance-storage.git
+      - git+https://github.com/cubecloud/secureapikey.git
+      - git+https://github.com/cubecloud/mlthread-tools.git
+prefix: /home/cubecloud/anaconda3/envs/dbupdater-tests
