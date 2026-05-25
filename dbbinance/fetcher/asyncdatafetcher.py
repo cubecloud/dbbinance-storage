@@ -20,7 +20,7 @@ from dbbinance.fetcher import create_pool
 from dbbinance.fetcher import ceil_time, floor_time
 
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
-from dbbinance.fetcher.datautils import convert_timeframe_to_freq
+from dbbinance.fetcher.datautils import convert_timeframe_to_freq, get_timeframe_bins
 from collections import OrderedDict
 
 from binance.client import Client
@@ -1055,18 +1055,29 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
             return _df
 
         async def get_raw_df():
-            # check if the data is already cached
-            cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
-                                              end_timestamp=end_timestamp)
+            raw_df = None
+            if cached:
+                cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
+                                                  end_timestamp=end_timestamp)
 
-            if cached and (cache_key in self.CM.cache):
-                raw_df = self.CM.cache[cache_key]
-                print(f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
-                      f"{start_timestamp} - {end_timestamp}")
+                if cache_key in self.CM.cache:
+                    raw_df = self.CM.cache[cache_key]
+                    logger.debug(f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data: {table_name} / "
+                                 f"{start_timestamp} - {end_timestamp}")
+                else:
+                    for key in self.CM.cache.keys():
+                        if (len(key) == 3) and (key[2][1] == table_name) and (start_timestamp >= key[1][1]) and (
+                                end_timestamp <= key[0][1]):
+                            raw_df = self.CM.cache[key].loc[start_timestamp:end_timestamp]
+                            logger.debug(
+                                f"{self.__class__.__name__} #{self.idnum}: Return cached RAW data (subset): "
+                                f"{table_name} / {start_timestamp} - {end_timestamp}")
+                            break
+                    if raw_df is None:
+                        raw_df = await prepare_raw_df()
+                        self.CM.update_cache(key=cache_key, value=raw_df.copy(deep=True))
             else:
-                # if not cached, fetch the data and cache it
                 raw_df = await prepare_raw_df()
-                self.CM.update_cache(key=cache_key, value=raw_df.copy(deep=True))
 
             return raw_df.copy(deep=True)
 
