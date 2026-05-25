@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.83  # fix NameError: use _AsyncSchemaCache (was _SchemaCache regression in 0.81)
+__version__ = 0.84  # add pg_resample_to_timeframe (SQL-side OHLCV resampling)
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"

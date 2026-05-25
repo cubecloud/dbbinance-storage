@@ -29,3 +29,59 @@ Environment file for conda 'db-updater.yml' contains HARD prefix to env location
 
 import dbbinance
 
+## Resampling OHLCV data
+
+Two ways to resample stored 1m candles to a higher timeframe:
+
+- `resample_to_timeframe(...)` — resampling in pandas (downloads raw rows, then aggregates in Python).
+- `pg_resample_to_timeframe(...)` — resampling entirely in PostgreSQL (SQL-side aggregation). Output is identical to the pandas method, but roughly **~4.3x faster** because only the aggregated rows are transferred.
+
+Both methods share the same signature and exist on the synchronous `DataFetcher` and the asynchronous `AsyncDataFetcher`.
+
+Synchronous (`DataFetcher`):
+
+```python
+import datetime
+from datetime import timezone
+from dbbinance.fetcher import DataFetcher, Constants
+
+fetcher = DataFetcher(
+    host=..., database=..., user=..., password=...,
+    binance_api_key=..., binance_api_secret=...,
+)
+
+df = fetcher.pg_resample_to_timeframe(
+    table_name="spot_data_btcusdt_1m",
+    start=datetime.datetime(2018, 8, 1, tzinfo=timezone.utc),
+    end=datetime.datetime.now(timezone.utc),
+    to_timeframe="1h",
+    origin="start",
+    use_cols=Constants.ohlcv_cols,
+    use_dtypes=Constants.ohlcv_dtypes,
+    open_time_index=True,
+    cached=False,
+)
+```
+
+Asynchronous (`AsyncDataFetcher`):
+
+```python
+from dbbinance.fetcher import create_pool, Constants
+from dbbinance.fetcher.asyncdatafetcher import AsyncDataFetcher
+
+pool = await create_pool(host=..., database=..., user=..., password=...)
+fetcher = AsyncDataFetcher(pool=pool, binance_api_key=..., binance_api_secret=...)
+
+df = await fetcher.pg_resample_to_timeframe(
+    table_name="spot_data_btcusdt_1m",
+    start=...,
+    end=...,
+    to_timeframe="1h",
+    origin="start",
+    use_cols=Constants.ohlcv_cols,
+    use_dtypes=Constants.ohlcv_dtypes,
+    open_time_index=True,
+    cached=False,
+)
+```
+

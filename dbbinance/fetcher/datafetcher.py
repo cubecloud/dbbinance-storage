@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.83  # Timestamp-native open_time pipeline for TIMESTAMPTZ schema
+__version__ = 0.84  # add pg_resample_to_timeframe (SQL-side OHLCV resampling)
 
 logger = logging.getLogger()
 
