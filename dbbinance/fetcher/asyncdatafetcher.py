@@ -33,7 +33,6 @@ from dbbinance.config.configbinance import ConfigBinance
 
 __version__ = 0.83  # fix NameError: use _AsyncSchemaCache (was _SchemaCache regression in 0.81)
 
-
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
 TIMESTAMPTZ = "timestamp with time zone"
@@ -85,8 +84,9 @@ class _AsyncSchemaCache:
         cls._types = {
             k: v for k, v in cls._types.items()
             if not (pool is not None and k[0] == id(pool))
-            and not (table_name is not None and k[1] == table_name)
+               and not (table_name is not None and k[1] == table_name)
         }
+
 
 logger = logging.getLogger()
 
@@ -1019,32 +1019,50 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
         return get_timeframe_bins(to_timeframe) * 60_000
 
     def _build_pg_resample_query(
-        self,
-        col_type: str,
-        table_name: str,
-        freq_ms: int,
-        use_cols: tuple,
-        agg_dict: dict,
+            self,
+            col_type: str,
+            table_name: str,
+            freq_ms: int,
+            use_cols: tuple,
+            agg_dict: dict,
     ) -> str:
         _AGG_SQL = {
             'first': 'MAX(CASE WHEN rn_asc=1 THEN {col} END)',
-            'last':  'MAX(CASE WHEN rn_desc=1 THEN {col} END)',
-            'max':   'MAX({col})',
-            'min':   'MIN({col})',
-            'sum':   'SUM({col})',
+            'last': 'MAX(CASE WHEN rn_desc=1 THEN {col} END)',
+            'max': 'MAX({col})',
+            'min': 'MIN({col})',
+            'sum': 'SUM({col})',
         }
 
         data_cols = ', '.join(c for c in use_cols if c != 'open_time')
 
-        if col_type == BIGINT:
-            bin_formula = (
-                f"$1::bigint + ((open_time - $1::bigint + {freq_ms} - 1) / {freq_ms}) * {freq_ms}"
-            )
+        _one_day_ms = 86_400_000
+        if freq_ms > _one_day_ms:
+            # Multi-day (nD, n>1): pandas uses calendar-day granularity — the first bin
+            # covers exactly 1 calendar day [start, start+1D), subsequent bins cover n days.
+            # Formula: bin = floor((delta + freq - 1D) / freq)
+            _offset = freq_ms - _one_day_ms
+            if col_type == BIGINT:
+                bin_formula = (
+                    f"$1::bigint + ((open_time - $1::bigint + {_offset}) / {freq_ms}) * {freq_ms}"
+                )
+            else:
+                bin_formula = (
+                    f"$1::timestamptz + FLOOR((EXTRACT(EPOCH FROM (open_time - $1::timestamptz)) "
+                    f"* 1000.0 + {_offset}.0) / {freq_ms})::bigint "
+                    f"* interval '{freq_ms} milliseconds'"
+                )
         else:
-            bin_formula = (
-                f"$1::timestamptz + (CEIL(EXTRACT(EPOCH FROM (open_time - $1::timestamptz)) * 1000.0 "
-                f"/ {freq_ms}))::bigint * interval '{freq_ms} milliseconds'"
-            )
+            # Sub-day or exactly 1 day: use CEIL(delta / freq) — matches pandas closed='right'.
+            if col_type == BIGINT:
+                bin_formula = (
+                    f"$1::bigint + ((open_time - $1::bigint + {freq_ms} - 1) / {freq_ms}) * {freq_ms}"
+                )
+            else:
+                bin_formula = (
+                    f"$1::timestamptz + (CEIL(EXTRACT(EPOCH FROM (open_time - $1::timestamptz)) "
+                    f"* 1000.0 / {freq_ms}))::bigint * interval '{freq_ms} milliseconds'"
+                )
 
         agg_exprs = ',\n    '.join(
             _AGG_SQL[fn].format(col=col)
@@ -1189,16 +1207,16 @@ ORDER BY bin_label
         return data_df.copy(deep=True)
 
     async def pg_resample_to_timeframe(
-        self,
-        table_name: str,
-        start: Union[datetime.datetime, int],
-        end: Union[datetime.datetime, int],
-        to_timeframe: str = "1h",
-        origin: str = "start",
-        use_cols: tuple = Constants.binance_cols,
-        use_dtypes=None,
-        open_time_index: bool = True,
-        cached: bool = False,
+            self,
+            table_name: str,
+            start: Union[datetime.datetime, int],
+            end: Union[datetime.datetime, int],
+            to_timeframe: str = "1h",
+            origin: str = "start",
+            use_cols: tuple = Constants.binance_cols,
+            use_dtypes=None,
+            open_time_index: bool = True,
+            cached: bool = False,
     ) -> pd.DataFrame:
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
         col_type = await _AsyncSchemaCache.get(self.pool, table_name)

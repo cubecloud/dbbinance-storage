@@ -183,3 +183,98 @@ async def test_speed_comparison(pool, start_datetime, end_datetime):
           " ".join(f"{t:>7.0f}ms" for t in pg_times) +
           f" {pg_avg:>7.0f}ms")
     print(f"\nSpeedup: {speedup:.2f}x  ({'faster' if speedup > 1 else 'slower'})")
+
+
+# ---------------------------------------------------------------------------
+# Multi-timeframe correctness tests
+# ---------------------------------------------------------------------------
+
+# All timeframes that both methods support.
+# '1w' excluded: pandas resample('1W') uses Sunday-anchored bins regardless of origin,
+# which cannot be reproduced with a start-aligned SQL formula.
+_TEST_TIMEFRAMES = [timeframe for timeframe in Constants.time_intervals if timeframe in Constants.binsizes and timeframe != '1w']
+
+# Fixed 7-day window with good historical data, start aligned to midnight
+_WINDOW_START = datetime.datetime(2021, 1, 4, 0, 0, 0, tzinfo=timezone.utc)
+_WINDOW_END   = datetime.datetime(2021, 1, 11, 0, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("timeframe", _TEST_TIMEFRAMES)
+async def test_pg_resample_all_timeframes(pool, timeframe):
+    """pg output must match pandas output for every timeframe in Constants."""
+    fetcher = AsyncDataFetcher(pool=pool, binance_api_key='dummy', binance_api_secret='dummy')
+
+    pandas_df = await fetcher.resample_to_timeframe(
+        table_name=TABLE_NAME, start=_WINDOW_START, end=_WINDOW_END,
+        to_timeframe=timeframe, origin="start",
+        use_cols=Constants.ohlcv_cols, use_dtypes=Constants.ohlcv_dtypes,
+        open_time_index=True, cached=False,
+    )
+    pg_df = await fetcher.pg_resample_to_timeframe(
+        table_name=TABLE_NAME, start=_WINDOW_START, end=_WINDOW_END,
+        to_timeframe=timeframe, origin="start",
+        use_cols=Constants.ohlcv_cols, use_dtypes=Constants.ohlcv_dtypes,
+        open_time_index=True, cached=False,
+    )
+
+    assert not pandas_df.empty, f"{timeframe}: pandas result empty"
+    assert not pg_df.empty,     f"{timeframe}: pg result empty"
+    try:
+        pd.testing.assert_frame_equal(pandas_df, pg_df, rtol=1e-9, check_freq=False)
+    except AssertionError as e:
+        raise AssertionError(f"timeframe={timeframe}: {e}") from None
+
+
+# ---------------------------------------------------------------------------
+# Boundary-start correctness tests
+# Each case: start offset N minutes from a natural freq boundary.
+# Tests that origin='start' binning is correct at freq-edge conditions.
+# ---------------------------------------------------------------------------
+
+_BOUNDARY_CASES = [
+    # (timeframe, offset_min)         description
+    ("1h",    0),   # aligned to hour
+    ("1h",    1),   # +1 min: first bin has 1 candle
+    ("1h",   59),   # +(freq-1) min: first bin has 1 candle
+    ("4h",    0),
+    ("4h",    1),
+    ("4h",  239),   # +(4*60-1) min
+    ("1d",    0),
+    ("1d",    1),
+    ("1d", 1439),   # +(24*60-1) min
+    ("15m",   0),
+    ("15m",   1),
+    ("15m",  14),   # +(15-1) min
+    ("30m",   0),
+    ("30m",   1),
+    ("30m",  29),   # +(30-1) min
+]
+
+
+@pytest.mark.parametrize("timeframe,offset_min", _BOUNDARY_CASES)
+async def test_pg_resample_boundary_starts(pool, timeframe, offset_min):
+    """pg and pandas must agree when start is offset from natural freq boundaries."""
+    start = _WINDOW_START + datetime.timedelta(minutes=offset_min)
+    end   = start + datetime.timedelta(days=7)
+
+    fetcher = AsyncDataFetcher(pool=pool, binance_api_key='dummy', binance_api_secret='dummy')
+
+    pandas_df = await fetcher.resample_to_timeframe(
+        table_name=TABLE_NAME, start=start, end=end,
+        to_timeframe=timeframe, origin="start",
+        use_cols=Constants.ohlcv_cols, use_dtypes=Constants.ohlcv_dtypes,
+        open_time_index=True, cached=False,
+    )
+    pg_df = await fetcher.pg_resample_to_timeframe(
+        table_name=TABLE_NAME, start=start, end=end,
+        to_timeframe=timeframe, origin="start",
+        use_cols=Constants.ohlcv_cols, use_dtypes=Constants.ohlcv_dtypes,
+        open_time_index=True, cached=False,
+    )
+
+    try:
+        pd.testing.assert_frame_equal(pandas_df, pg_df, rtol=1e-9, check_freq=False)
+    except AssertionError as e:
+        raise AssertionError(
+            f"timeframe={timeframe}, offset={offset_min}min: {e}"
+        ) from None
