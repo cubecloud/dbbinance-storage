@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.96  # resample bins left-closed [T,T+freq) == Binance native kline convention
+__version__ = 0.97  # last_full_bar=True: resampler drops incomplete trailing bin (complete bars only)
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -1025,6 +1025,23 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
     def _timeframe_to_ms(to_timeframe: str) -> int:
         return get_timeframe_bins(to_timeframe) * 60_000
 
+    @staticmethod
+    def _drop_partial_tail(df, freq_ms: int, end_timestamp, time_in_index: bool):
+        """Drop trailing bin(s) whose ``[label, label+interval)`` window extends past ``end``
+        — an INCOMPLETE last bar. Keeps complete bars only (matches Binance native klines).
+        ``time_in_index``: True if the bin label is the index, False if the 'open_time' column.
+        Complete bin: ``label + interval <= end``.
+        """
+        if df is None or len(df) == 0:
+            return df
+        if isinstance(end_timestamp, datetime.datetime):
+            end_ts = pd.to_datetime(end_timestamp, utc=True)
+        else:
+            end_ts = pd.to_datetime(int(end_timestamp), unit='ms', utc=True)
+        freq = pd.Timedelta(milliseconds=freq_ms)
+        labels = df.index if time_in_index else pd.to_datetime(df['open_time'], utc=True)
+        return df[(labels + freq) <= end_ts]
+
     def _build_pg_resample_query(
             self,
             col_type: str,
@@ -1112,6 +1129,7 @@ ORDER BY bin_label
                                     use_dtypes=None,
                                     open_time_index: bool = True,
                                     cached=False,
+                                    last_full_bar: bool = True,
                                     ):
         # prepare the start and end timestamps, convert them to datetime if necessary
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
@@ -1185,6 +1203,9 @@ ORDER BY bin_label
             # label='left', closed='left' -> bar [T, T+freq) labeled by its START == Binance
             # native kline convention (openTime = bin start). Verified vs Binance API.
             resampled_df = resampled_df.resample(freq, label='left', closed='left', origin=origin).agg(agg_dict)
+            if last_full_bar:
+                resampled_df = self._drop_partial_tail(
+                    resampled_df, self._timeframe_to_ms(to_timeframe), end_timestamp, time_in_index=True)
             if not open_time_index:
                 resampled_df = resampled_df.reset_index()
 
@@ -1198,7 +1219,7 @@ ORDER BY bin_label
             if cached:
                 cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
                                                   end_timestamp=end_timestamp, timeframe=to_timeframe, origin=origin,
-                                                  open_time_index=open_time_index)
+                                                  open_time_index=open_time_index, last_full_bar=last_full_bar)
 
                 # check if the data is already cached
                 if cache_key in self.CM.cache:
@@ -1228,6 +1249,7 @@ ORDER BY bin_label
             use_dtypes=None,
             open_time_index: bool = True,
             cached: bool = False,
+            last_full_bar: bool = True,
     ) -> pd.DataFrame:
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
         col_type = await _AsyncSchemaCache.get(self.pool, table_name)
@@ -1256,6 +1278,9 @@ ORDER BY bin_label
             else:
                 df['open_time'] = pd.to_datetime(df['open_time'], utc=True)
 
+            if last_full_bar:
+                df = self._drop_partial_tail(df, freq_ms, end_timestamp, time_in_index=False)
+
             if open_time_index:
                 df = df.set_index('open_time')
 
@@ -1269,6 +1294,7 @@ ORDER BY bin_label
                 timeframe=to_timeframe,
                 origin=origin,
                 open_time_index=open_time_index,
+                last_full_bar=last_full_bar,
                 method='pg',
             )
             if cache_key in self.CM.cache:
