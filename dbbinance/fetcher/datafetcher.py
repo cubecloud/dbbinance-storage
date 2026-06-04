@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.85  # fix DataRepair gap-repair under TIMESTAMPTZ schema
+__version__ = 0.96  # resample bins left-closed [T,T+freq) == Binance native kline convention
 
 logger = logging.getLogger()
 
@@ -1108,14 +1108,16 @@ class DataFetcher(DataUpdaterMeta):
                     f"* interval '{freq_ms} milliseconds'"
                 )
         else:
-            # Sub-day or exactly 1 day: CEIL(delta / freq) matches pandas closed='right'.
+            # Sub-day or exactly 1 day: FLOOR(delta / freq) labels each bar by its START,
+            # closed='left' -> bar [T, T+freq) == Binance native kline (openTime=bin start,
+            # closeTime=T+freq-1ms). Verified vs Binance API (30m @T open == 1m @T open).
             if col_type == BIGINT:
                 bin_formula_tpl = (
-                    f"{{start_ts}}::bigint + ((open_time - {{start_ts}}::bigint + {freq_ms} - 1) / {freq_ms}) * {freq_ms}"
+                    f"{{start_ts}}::bigint + ((open_time - {{start_ts}}::bigint) / {freq_ms}) * {freq_ms}"
                 )
             else:
                 bin_formula_tpl = (
-                    f"{{start_ts}}::timestamptz + (CEIL(EXTRACT(EPOCH FROM (open_time - {{start_ts}}::timestamptz)) "
+                    f"{{start_ts}}::timestamptz + (FLOOR(EXTRACT(EPOCH FROM (open_time - {{start_ts}}::timestamptz)) "
                     f"* 1000.0 / {freq_ms}))::bigint * interval '{freq_ms} milliseconds'"
                 )
 
@@ -1246,7 +1248,9 @@ ORDER BY bin_label
             agg_dict = self._get_agg_dict(use_cols)
             freq = convert_timeframe_to_freq(to_timeframe)
 
-            resampled_df = resampled_df.resample(freq, label='right', closed='right', origin=origin).agg(agg_dict)
+            # label='left', closed='left' -> bar [T, T+freq) labeled by its START == Binance
+            # native kline convention (openTime = bin start). Verified vs Binance API.
+            resampled_df = resampled_df.resample(freq, label='left', closed='left', origin=origin).agg(agg_dict)
             if not open_time_index:
                 resampled_df = resampled_df.reset_index()
 
