@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 0.98  # use_extended_cols / Constants.binance_extended_cols + agg short-name fix (trades/taker_buy_base/_quote)
+__version__ = 0.99  # + extended cache-key fix (use_extended_cols in cache_key -> no OHLCV/extended collision)
 
 logger = logging.getLogger()
 
@@ -1255,7 +1255,8 @@ ORDER BY bin_label
             """ Cached raw df (minutes) """
             if cached:
                 cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
-                                                  end_timestamp=end_timestamp)
+                                                  end_timestamp=end_timestamp,
+                                                  use_extended_cols=use_extended_cols)
 
                 #   check if data is already in
                 if cache_key in self.CM.cache.keys():
@@ -1312,7 +1313,8 @@ ORDER BY bin_label
             if cached:
                 cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
                                                   end_timestamp=end_timestamp, timeframe=to_timeframe, origin=origin,
-                                                  open_time_index=open_time_index, last_full_bar=last_full_bar)
+                                                  open_time_index=open_time_index, last_full_bar=last_full_bar,
+                                                  use_extended_cols=use_extended_cols)
 
                 if cache_key in self.CM.cache.keys():
                     resampled_df = self.CM.cache[cache_key]
@@ -1399,6 +1401,7 @@ ORDER BY bin_label
                 origin=origin,
                 open_time_index=open_time_index,
                 last_full_bar=last_full_bar,
+                use_extended_cols=use_extended_cols,
                 method='pg',
             )
             if cache_key in self.CM.cache:

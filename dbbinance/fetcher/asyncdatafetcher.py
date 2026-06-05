@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.98  # use_extended_cols / Constants.binance_extended_cols + agg short-name fix (trades/taker_buy_base/_quote)
+__version__ = 0.99  # + extended cache-key fix (use_extended_cols in cache_key -> no OHLCV/extended collision)
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -1187,7 +1187,8 @@ ORDER BY bin_label
             raw_df = None
             if cached:
                 cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
-                                                  end_timestamp=end_timestamp)
+                                                  end_timestamp=end_timestamp,
+                                                  use_extended_cols=use_extended_cols)
 
                 if cache_key in self.CM.cache:
                     raw_df = self.CM.cache[cache_key]
@@ -1242,7 +1243,8 @@ ORDER BY bin_label
             if cached:
                 cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
                                                   end_timestamp=end_timestamp, timeframe=to_timeframe, origin=origin,
-                                                  open_time_index=open_time_index, last_full_bar=last_full_bar)
+                                                  open_time_index=open_time_index, last_full_bar=last_full_bar,
+                                                  use_extended_cols=use_extended_cols)
 
                 # check if the data is already cached
                 if cache_key in self.CM.cache:
@@ -1320,6 +1322,7 @@ ORDER BY bin_label
                 origin=origin,
                 open_time_index=open_time_index,
                 last_full_bar=last_full_bar,
+                use_extended_cols=use_extended_cols,
                 method='pg',
             )
             if cache_key in self.CM.cache:

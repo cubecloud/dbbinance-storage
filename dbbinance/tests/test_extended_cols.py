@@ -16,6 +16,7 @@ import pandas as pd
 from dbbinance.fetcher import Constants, create_pool, floor_time
 from dbbinance.fetcher.asyncdatafetcher import AsyncDataFetcher
 from dbbinance.fetcher.datafetcher import DataFetcher
+from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 
 TABLE_NAME = "spot_data_btcusdt_1m"
@@ -99,6 +100,28 @@ async def test_extended_taker_buy_not_exceeding_volume(pool):
         use_extended_cols=True)
     assert (df['taker_buy_base'] <= df['volume'] + 1e-6).all(), "taker_buy_base exceeds volume"
     assert (df['trades'] > 0).all(), "non-positive trades in a populated window"
+
+
+async def test_extended_vs_ohlcv_cache_no_collision(pool):
+    """Same window cached BOTH ways must not collide (cache key includes use_extended_cols).
+
+    Regression: previously the cache key omitted use_cols/use_extended_cols, so an OHLCV load
+    (cached) and an extended load of the same window returned the same cached 6-column frame.
+    """
+    cache = FetcherCacheManager(max_memory_gb=1)
+    fetcher = AsyncDataFetcher(pool=pool, binance_api_key='dummy', binance_api_secret='dummy',
+                              cache_obj=cache)
+    common = dict(table_name=TABLE_NAME, start=_WINDOW_START, end=_WINDOW_END,
+                  to_timeframe="1h", origin="start", open_time_index=True, cached=True)
+
+    ohlcv = await fetcher.pg_resample_to_timeframe(
+        **common, use_cols=Constants.ohlcv_cols, use_dtypes=Constants.ohlcv_dtypes,
+        use_extended_cols=False)
+    ext = await fetcher.pg_resample_to_timeframe(
+        **common, use_dtypes=Constants.binance_extended_dtypes, use_extended_cols=True)
+
+    assert 'taker_buy_base' not in ohlcv.columns
+    assert 'taker_buy_base' in ext.columns, "extended load returned the cached OHLCV frame (collision)"
 
 
 async def test_default_off_is_ohlcv_only(pool):
