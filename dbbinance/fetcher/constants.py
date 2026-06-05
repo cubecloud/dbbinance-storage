@@ -2,7 +2,7 @@ import datetime
 from typing import Tuple
 from dataclasses import dataclass
 
-__version__ = 0.023
+__version__ = 0.024  # binance_extended_cols / binance_extended_dtypes (OHLCV + order-flow fields)
 
 
 @dataclass
@@ -19,6 +19,14 @@ class Constants:
 
     ohlcv_cols: Tuple = ('open_time', 'open', 'high', 'low', 'close', 'volume',)
     ohlcv_dtypes = {'open_time': int, 'open': float, 'high': float, 'low': float, 'close': float, 'volume': float}
+
+    # OHLCV plus the order-flow / microstructure kline fields (everything resample-aggregatable;
+    # excludes close_time + ignored). Selected by ``use_extended_cols=True`` in the resamplers.
+    binance_extended_cols: Tuple = ('open_time', 'open', 'high', 'low', 'close', 'volume',
+                                    'quote_asset_volume', 'trades', 'taker_buy_base', 'taker_buy_quote',)
+    binance_extended_dtypes = {'open_time': int, 'open': float, 'high': float, 'low': float, 'close': float,
+                               'volume': float, 'quote_asset_volume': float, 'trades': int,
+                               'taker_buy_base': float, 'taker_buy_quote': float}
 
     binance_cols: Tuple = ("open_time",
                            "open",

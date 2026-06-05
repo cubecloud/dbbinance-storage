@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.97  # last_full_bar=True: resampler drops incomplete trailing bin (complete bars only)
+__version__ = 0.98  # use_extended_cols / Constants.binance_extended_cols + agg short-name fix (trades/taker_buy_base/_quote)
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -664,6 +664,10 @@ class AsyncDataUpdaterMeta(AsyncPostgreSQLDatabase):
 
         self.default_agg_dict = {'open_time': 'first', 'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last',
                                  'volume': 'sum', 'close_time': 'last', 'quote_asset_volume': 'sum',
+                                 # short names matching the actual DB / Constants.binance_cols columns
+                                 # (the long-name keys below stayed unused -> extended resample got
+                                 # agg=None for these and broke; keep both for back-compat).
+                                 'trades': 'sum', 'taker_buy_base': 'sum', 'taker_buy_quote': 'sum',
                                  'number_of_trades': 'sum', 'taker_buy_base_asset_volume': 'sum',
                                  'taker_buy_quote_asset_volume': 'sum'}
 
@@ -1022,6 +1026,23 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
         return actual_agg_dict
 
     @staticmethod
+    def _resolve_use_cols(use_cols, use_extended_cols: bool):
+        """Pick the columns to resample: extended kline set vs the caller's ``use_cols``.
+
+        Async twin of ``DataFetcher._resolve_use_cols``. When ``use_extended_cols`` is True returns
+        ``Constants.binance_extended_cols`` (OHLCV + quote_asset_volume + trades + taker_buy_base +
+        taker_buy_quote), else ``use_cols`` unchanged.
+
+        Args:
+            use_cols: columns the caller passed.
+            use_extended_cols: select the extended kline set instead.
+
+        Returns:
+            The tuple of columns to resample.
+        """
+        return Constants.binance_extended_cols if use_extended_cols else use_cols
+
+    @staticmethod
     def _timeframe_to_ms(to_timeframe: str) -> int:
         return get_timeframe_bins(to_timeframe) * 60_000
 
@@ -1130,7 +1151,9 @@ ORDER BY bin_label
                                     open_time_index: bool = True,
                                     cached=False,
                                     last_full_bar: bool = True,
+                                    use_extended_cols: bool = False,
                                     ):
+        use_cols = self._resolve_use_cols(use_cols, use_extended_cols)
         # prepare the start and end timestamps, convert them to datetime if necessary
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
 
@@ -1250,7 +1273,9 @@ ORDER BY bin_label
             open_time_index: bool = True,
             cached: bool = False,
             last_full_bar: bool = True,
+            use_extended_cols: bool = False,
     ) -> pd.DataFrame:
+        use_cols = self._resolve_use_cols(use_cols, use_extended_cols)
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
         col_type = await _AsyncSchemaCache.get(self.pool, table_name)
         freq_ms = self._timeframe_to_ms(to_timeframe)
