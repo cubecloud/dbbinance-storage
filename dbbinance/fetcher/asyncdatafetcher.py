@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 0.99  # + extended cache-key fix (use_extended_cols in cache_key -> no OHLCV/extended collision)
+__version__ = 1.0  # remove legacy 'id' crutches from OHLCV read/repair; read defaults -> newsql_cols (no id)
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -269,7 +269,6 @@ class DataRepair:
         logger.debug(f"{self.__class__.__name__}: Initializing {self.__class__.__name__}")
 
         self.open_time_col_name = "open_time"
-        self.start_id: int = 1
         self.timeframes_windows: list = []
         self.start_end_close_time: Tuple = (None, None)
         self.ts_start_end_open_time_before: Tuple = (None, None)
@@ -341,10 +340,6 @@ class DataRepair:
         return ts
 
     def before_preparation(self, data_df):
-        """ Remember 1st ID to reconstruct at the end """
-        if "id" in data_df.columns:
-            self.start_id = data_df["id"][0]
-
         self.ts_start_end_open_time_before = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
 
         """ Convert timestamp of 'open_time' to datetime format """
@@ -365,45 +360,22 @@ class DataRepair:
         return data_df
 
     def after_preparation(self, data_df, timeframe):
-        """ Reset index to get 'open_time' as column"""
-        if 'id' in data_df.columns:
-            data_df = data_df.reset_index()
-            """ Reconstruct 'id' column """
-            data_df = data_df.drop(columns=["id"])
-            data_df.insert(0, "id", range(self.start_id, self.start_id + len(data_df)))
-            data_df["id"] = data_df["id"].astype("int64")
+        """ TIMESTAMPTZ schema (no 'id'): open_time is the index -
+        return it to a column, then convert back to Unix-ms timestamp """
+        data_df = data_df.reset_index()
+        data_df["open_time"] = self.convert_datetime_to_timestamp(data_df["open_time"])
+        self.ts_start_end_open_time_after = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
+        logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' before: "
+                     f"{self.ts_start_end_open_time_before}")
+        logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' after: "
+                     f"{self.ts_start_end_open_time_after}")
 
-            """ Convert _datetime_ of 'open_time' to timestamp format """
-            data_df["open_time"] = self.convert_datetime_to_timestamp(data_df["open_time"])
-            self.ts_start_end_open_time_after = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
-            logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' before: "
-                         f"{self.ts_start_end_open_time_before}")
-            logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' after: "
-                         f"{self.ts_start_end_open_time_after}")
+        """ Create new close_time and add it to data_df (position 6: no 'id' column) """
+        frequency = convert_timeframe_to_freq(timeframe)
+        close_time_dt = pd.date_range(self.start_end_close_time[0], self.start_end_close_time[1], freq=frequency)
 
-            """ Create new close_time and ad it to data_df """
-            frequency = convert_timeframe_to_freq(timeframe)
-            close_time_dt = pd.date_range(self.start_end_close_time[0], self.start_end_close_time[1], freq=frequency)
-
-            """ Convert _datetime_ of 'close_time' to timestamp format and insert back """
-            data_df.insert(7, "close_time", self.convert_datetime_to_timestamp(pd.Series(close_time_dt)))
-        else:
-            """ open_time сейчас индекс — вернуть его колонкой, затем в timestamp """
-            data_df = data_df.reset_index()
-            data_df["open_time"] = self.convert_datetime_to_timestamp(data_df["open_time"])
-            self.ts_start_end_open_time_after = (data_df["open_time"].iloc[0], data_df["open_time"].iloc[-1])
-            logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' before: "
-                         f"{self.ts_start_end_open_time_before}")
-            logger.debug(f"{self.__class__.__name__}: Start/end timestamp of 'open_time' after: "
-                         f"{self.ts_start_end_open_time_after}")
-
-            """ Create new close_time and ad it to data_df """
-            frequency = convert_timeframe_to_freq(timeframe)
-            close_time_dt = pd.date_range(self.start_end_close_time[0], self.start_end_close_time[1], freq=frequency)
-
-            """ Convert _datetime_ of 'close_time' to timestamp format and insert back """
-            data_df.insert(6, "close_time", self.convert_datetime_to_timestamp(pd.Series(close_time_dt)))
-
+        """ Convert _datetime_ of 'close_time' to timestamp format and insert back """
+        data_df.insert(6, "close_time", self.convert_datetime_to_timestamp(pd.Series(close_time_dt)))
         return data_df
 
     @classmethod
@@ -610,7 +582,7 @@ class DataRepair:
                 logger.info(
                     f"{self.__class__.__name__}: Total/loaded/NOT loaded timeframes: {total_timeframes}/{loaded_timeframes}/{not_loaded_timeframes}")
 
-                """ Drop id and reconstruct """
+                """ Reconstruct open_time/close_time columns into newsql_cols order """
                 data_df = self.after_preparation(data_df, timeframe)
 
                 for col_name in data_df.columns:
@@ -618,8 +590,6 @@ class DataRepair:
                     if col_name[0].isupper():
                         dict_name = dict_name[0].lower()
                     col_dtype = Constants.newsql_dtypes.get(dict_name, None)
-                    if col_name == "id":
-                        col_dtype = "int64"
                     if col_name in ("open_time", "close_time"):
                         # after_preparation отдаёт их как Unix-ms int (формат, который
                         # ждёт insert_klines_to_table). Каст в datetime64[ns] здесь
@@ -950,9 +920,7 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                         f"'{table_name}' - Database repaired. Saving repaired data back to database.")
             logger.debug(f"{self.__class__.__name__} #{self.idnum}: "
                          f"'{table_name}' - Start saving repaired data back to database: {start_time}")
-            # async-поток читает по newsql_cols (без 'id'); errors='ignore' — на случай,
-            # если 'id' всё же присутствует.
-            data_df = data_df.drop(columns="id", errors="ignore")
+            # read/repair path uses newsql_cols (no 'id'); insert directly
             result = await self.insert_klines_to_table(table_name, data_df.values.tolist())
             logger.debug(f"{self.__class__.__name__} #{self.idnum}:'{table_name}' - data saved. "
                          f"Written qty: {result}. ETA: {datetime.datetime.now(timezone.utc) - start_time}")
