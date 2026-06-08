@@ -19,6 +19,7 @@
 Тест ходит в сеть (Binance) и читается под `pytest -s`.
 """
 import datetime
+import os
 from datetime import timezone
 
 import numpy as np
@@ -27,23 +28,33 @@ import pytest
 
 from dbbinance.fetcher import Constants
 from dbbinance.fetcher.datafetcher import DataRepair
-from dbbinance.config.configbinance import ConfigBinance
-from binance.client import Client
 
 OHLCV = ["open", "high", "low", "close", "volume"]
 PAD = 10                      # минут контекста с каждой стороны гэпа
 BASE_START = "01 Jun 2023 00:00:00"   # стабильный исторический диапазон
 
+# Этот модуль ходит в СЕТЬ (живой Binance). По умолчанию он пропускается,
+# чтобы обязательный DB-free/no-network прогон оставался зелёным без сети.
+# Запуск только при явном RUN_NETWORK_TESTS=1.
+pytestmark = pytest.mark.skipif(
+    os.environ.get("RUN_NETWORK_TESTS") != "1",
+    reason="живой Binance-тест; выставьте RUN_NETWORK_TESTS=1 чтобы включить",
+)
+
 
 @pytest.fixture(scope="module")
 def client():
+    # Импортируем здесь, а не на уровне модуля: при пропуске (нет RUN_NETWORK_TESTS=1)
+    # фикстура не выполняется, поэтому живой клиент никогда не конструируется.
+    from dbbinance.config.configbinance import ConfigBinance
+    from binance.client import Client
     return Client(api_key=ConfigBinance.BINANCE_API_KEY,
                   api_secret=ConfigBinance.BINANCE_API_SECRET)
 
 
 def _klines_to_truth_df(klines) -> pd.DataFrame:
-    """Свечи Binance -> DataFrame в схеме get_all_data_as_df (sql_cols,
-    open_time/close_time как datetime64[ns, UTC])."""
+    """Свечи Binance -> DataFrame в схеме get_all_data_as_df (newsql_cols, БЕЗ 'id',
+    open_time/close_time как datetime64[ns, UTC]) — реальная TIMESTAMPTZ-схема."""
     df = pd.DataFrame(klines, columns=list(Constants.binance_cols))
     df = df.iloc[:, :len(Constants.binance_cols)]
     for c in ["open", "high", "low", "close", "volume",
@@ -52,7 +63,6 @@ def _klines_to_truth_df(klines) -> pd.DataFrame:
     df["trades"] = df["trades"].astype("int64")
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
     df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
-    df.insert(0, "id", np.arange(1, len(df) + 1, dtype="int64"))
     return df
 
 

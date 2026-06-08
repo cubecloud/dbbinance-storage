@@ -2,7 +2,7 @@ import datetime
 from typing import Tuple
 from dataclasses import dataclass
 
-__version__ = 0.024  # binance_extended_cols / binance_extended_dtypes (OHLCV + order-flow fields)
+__version__ = 0.025  # remove legacy sql_cols / sql_dtypes (no-id TIMESTAMPTZ OHLCV schema)
 
 
 @dataclass
@@ -55,36 +55,6 @@ class Constants:
                       'taker_buy_quote': float,
                       'ignored': float,
                       }
-
-    sql_cols: Tuple = ("id",
-                       "open_time",
-                       "open",
-                       "high",
-                       "low",
-                       "close",
-                       "volume",
-                       "close_time",
-                       "quote_asset_volume",
-                       "trades",
-                       "taker_buy_base",
-                       "taker_buy_quote",
-                       "ignored"
-                       )
-
-    sql_dtypes = {"id": int,
-                  'open_time': int,
-                  'open': float,
-                  'high': float,
-                  'low': float,
-                  'close': float,
-                  'volume': float,
-                  'close_time': int,
-                  'quote_asset_volume': float,
-                  'trades': int,
-                  'taker_buy_base': float,
-                  'taker_buy_quote': float,
-                  'ignored': float,
-                  }
 
     newsql_cols: Tuple = ("open_time",
                           "open",
