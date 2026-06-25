@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 1.01  # partial-bar freeze fix: drop unclosed candle (A), tail-overlap re-read + upsert (B)
+__version__ = '1.0.2'  # partial-bar freeze fix: drop unclosed candle (A), tail-overlap re-read + upsert (B)
 
 logger = logging.getLogger()
 

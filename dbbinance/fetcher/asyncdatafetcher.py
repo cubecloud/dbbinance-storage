@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 1.01  # partial-bar freeze fix: drop unclosed candle (A), tail-overlap re-read + upsert (B)
+__version__ = '1.0.2'  # partial-bar freeze fix: drop unclosed candle (A), tail-overlap re-read + upsert (B)
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
