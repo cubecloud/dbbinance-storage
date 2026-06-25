@@ -21,7 +21,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = 1.0  # remove legacy 'id' crutches from OHLCV read/repair; read defaults -> newsql_cols (no id)
+__version__ = 1.01  # partial-bar freeze fix: drop unclosed candle (A), tail-overlap re-read + upsert (B)
 
 logger = logging.getLogger()
 
