@@ -117,6 +117,23 @@ def floor_time(dt=None, floor_to='1h', tz=None) -> datetime.datetime:
     return (dt - pd.Timedelta(1, unit='ns')).floor(freq).to_pydatetime()
 
 
+# Number of trailing closed bars re-read on every live update, so a partial bar that
+# slipped through earlier is re-fetched closed and corrected by the upsert (B: tail overlap).
+LIVE_OVERLAP_BARS = 5
+
+
+def drop_unclosed_klines(klines: list) -> list:
+    """Return only closed candles (close_time < now).
+
+    Binance returns the current still-forming minute as the last element; persisting it
+    freezes a partial bar (volume~0) that ON CONFLICT can never correct (A: partial-bar
+    freeze fix). Expects a list of klines with close_time (ms) at index 6."""
+    if not klines:
+        return klines
+    now_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
+    return [kline for kline in klines if int(kline[6]) < now_ms]
+
+
 class PostgreSQLDatabase(SQLMeta):
     def __init__(self, host, database, user, password, max_conn=10):
         super().__init__(host, database, user, password, max_conn)
@@ -206,6 +223,11 @@ class PostgreSQLDatabase(SQLMeta):
         open_time_ms, open_, high, low, close, volume, close_time_ms, \
             quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored = kline[:12]
 
+        # A (partial-bar freeze fix): skip the still-forming candle (close_time >= now).
+        now_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
+        if int(close_time_ms) >= now_ms:
+            return
+
         row = (
             datetime.datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc),
             float(open_),
@@ -228,7 +250,12 @@ class PostgreSQLDatabase(SQLMeta):
                 taker_buy_base, taker_buy_quote, ignored
             )
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (open_time) DO NOTHING;
+            ON CONFLICT (open_time) DO UPDATE SET
+                open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                close = EXCLUDED.close, volume = EXCLUDED.volume, close_time = EXCLUDED.close_time,
+                quote_asset_volume = EXCLUDED.quote_asset_volume, trades = EXCLUDED.trades,
+                taker_buy_base = EXCLUDED.taker_buy_base, taker_buy_quote = EXCLUDED.taker_buy_quote,
+                ignored = EXCLUDED.ignored;
         """).format(table=sql.Identifier(table_name))
 
         self.db_mgr.modify_query(query, row)
@@ -237,6 +264,10 @@ class PostgreSQLDatabase(SQLMeta):
     # Bulk insert (fast, no table locks)
     # ------------------------------------------------------------------
     def insert_klines_to_table(self, table_name: str, klines: list):
+        # A (partial-bar freeze fix): drop the still-forming candle before persisting.
+        klines = drop_unclosed_klines(klines)
+        if not klines:
+            return
         rows = [
             (
                 datetime.datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
@@ -262,7 +293,12 @@ class PostgreSQLDatabase(SQLMeta):
                 taker_buy_base, taker_buy_quote, ignored
             )
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (open_time) DO NOTHING;
+            ON CONFLICT (open_time) DO UPDATE SET
+                open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                close = EXCLUDED.close, volume = EXCLUDED.volume, close_time = EXCLUDED.close_time,
+                quote_asset_volume = EXCLUDED.quote_asset_volume, trades = EXCLUDED.trades,
+                taker_buy_base = EXCLUDED.taker_buy_base, taker_buy_quote = EXCLUDED.taker_buy_quote,
+                ignored = EXCLUDED.ignored;
         """).format(table=sql.Identifier(table_name))
 
         with ThreadPool(self.pool) as conn:
@@ -883,8 +919,11 @@ class DataUpdater(DataUpdaterMeta):
                     table_name = f"{base_table_name}_{symbol_pair}_{timeframe}".lower()
                     start_open_time = self.get_max_open_time(table_name)
                     start_open_time = datetime.datetime.fromtimestamp(start_open_time / 1000, tz=pytz.utc)
-                    start_open_time = start_open_time + datetime.timedelta(
-                        minutes=self.convert_timeframe_to_min(timeframe))
+                    # B1 (tail overlap): start LIVE_OVERLAP_BARS before max_open_time (instead of
+                    # +1 bar) so the last closed bars are re-read each run and any partial bar that
+                    # slipped through earlier is re-fetched closed and corrected by the upsert.
+                    start_open_time = start_open_time - datetime.timedelta(
+                        minutes=self.convert_timeframe_to_min(timeframe) * LIVE_OVERLAP_BARS)
                     until_open_time = start_open_time + datetime.timedelta(days=365)
 
                     start_open_time = start_open_time.strftime("%d %b %Y %H:%M:%S")
@@ -903,6 +942,8 @@ class DataUpdater(DataUpdaterMeta):
                     except BinanceAPIException as error_msg:
                         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Updater - exception {error_msg}")
                     else:
+                        # A: drop the still-forming candle before persisting / logging.
+                        klines = drop_unclosed_klines(klines)
                         if klines:
                             self.last_timeframe_datetime = datetime.datetime.fromtimestamp(
                                 klines[-1][0] / 1000, tz=pytz.utc)
