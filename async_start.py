@@ -5,7 +5,7 @@ from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.fetcher.asyncdatafetcher import AsyncDataUpdater
 from dbbinance.fetcher.asyncsqlbase import create_pool
 
-version = '1.0.3'
+version = '1.0.4'
 
 
 async def main():
@@ -22,6 +22,7 @@ async def main():
     await updater.start_background_updater(60)
 
 if __name__ == "__main__":
+    print(f'dbbinance-storage dbupdater (async)  v{version}  (c) cubecloud')
     logger = logging.getLogger()
 
     logger.setLevel(logging.INFO)

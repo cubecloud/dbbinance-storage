@@ -11,6 +11,7 @@ from pandas import Timestamp
 
 from dbbinance.fetcher.constants import Constants
 from dbbinance.fetcher.sqlbase import SQLMeta, handle_errors, sql, ThreadPool
+from psycopg2.extras import execute_values
 from dbbinance.fetcher.fetchercachemanager import FetcherCacheManager
 from dbbinance.fetcher.datautils import convert_timeframe_to_freq, get_timeframe_bins
 from collections import OrderedDict
@@ -21,7 +22,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = '1.0.3'  # freeze fix A+B; update_spot_data fetch window widened to 365*5 days
+__version__ = '1.0.4'  # overlap=3; write only on diff (ON CONFLICT WHERE distinct) + report rows written
 
 logger = logging.getLogger()
 
@@ -119,7 +120,7 @@ def floor_time(dt=None, floor_to='1h', tz=None) -> datetime.datetime:
 
 # Number of trailing closed bars re-read on every live update, so a partial bar that
 # slipped through earlier is re-fetched closed and corrected by the upsert (B: tail overlap).
-LIVE_OVERLAP_BARS = 5
+LIVE_OVERLAP_BARS = 3
 
 
 def drop_unclosed_klines(klines: list) -> list:
@@ -255,7 +256,16 @@ class PostgreSQLDatabase(SQLMeta):
                 close = EXCLUDED.close, volume = EXCLUDED.volume, close_time = EXCLUDED.close_time,
                 quote_asset_volume = EXCLUDED.quote_asset_volume, trades = EXCLUDED.trades,
                 taker_buy_base = EXCLUDED.taker_buy_base, taker_buy_quote = EXCLUDED.taker_buy_quote,
-                ignored = EXCLUDED.ignored;
+                ignored = EXCLUDED.ignored
+            WHERE (
+                {table}.open, {table}.high, {table}.low, {table}.close,
+                {table}.volume, {table}.close_time, {table}.quote_asset_volume,
+                {table}.trades, {table}.taker_buy_base, {table}.taker_buy_quote, {table}.ignored
+            ) IS DISTINCT FROM (
+                EXCLUDED.open, EXCLUDED.high, EXCLUDED.low, EXCLUDED.close,
+                EXCLUDED.volume, EXCLUDED.close_time, EXCLUDED.quote_asset_volume,
+                EXCLUDED.trades, EXCLUDED.taker_buy_base, EXCLUDED.taker_buy_quote, EXCLUDED.ignored
+            );
         """).format(table=sql.Identifier(table_name))
 
         self.db_mgr.modify_query(query, row)
@@ -267,7 +277,7 @@ class PostgreSQLDatabase(SQLMeta):
         # A (partial-bar freeze fix): drop the still-forming candle before persisting.
         klines = drop_unclosed_klines(klines)
         if not klines:
-            return
+            return 0
         rows = [
             (
                 datetime.datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
@@ -292,19 +302,34 @@ class PostgreSQLDatabase(SQLMeta):
                 close_time, quote_asset_volume, trades,
                 taker_buy_base, taker_buy_quote, ignored
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES %s
             ON CONFLICT (open_time) DO UPDATE SET
                 open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                 close = EXCLUDED.close, volume = EXCLUDED.volume, close_time = EXCLUDED.close_time,
                 quote_asset_volume = EXCLUDED.quote_asset_volume, trades = EXCLUDED.trades,
                 taker_buy_base = EXCLUDED.taker_buy_base, taker_buy_quote = EXCLUDED.taker_buy_quote,
-                ignored = EXCLUDED.ignored;
+                ignored = EXCLUDED.ignored
+            -- only write when the row actually changed (skip no-op upserts of unchanged bars)
+            WHERE (
+                {table}.open, {table}.high, {table}.low, {table}.close,
+                {table}.volume, {table}.close_time, {table}.quote_asset_volume,
+                {table}.trades, {table}.taker_buy_base, {table}.taker_buy_quote, {table}.ignored
+            ) IS DISTINCT FROM (
+                EXCLUDED.open, EXCLUDED.high, EXCLUDED.low, EXCLUDED.close,
+                EXCLUDED.volume, EXCLUDED.close_time, EXCLUDED.quote_asset_volume,
+                EXCLUDED.trades, EXCLUDED.taker_buy_base, EXCLUDED.taker_buy_quote, EXCLUDED.ignored
+            )
+            RETURNING 1
         """).format(table=sql.Identifier(table_name))
 
         with ThreadPool(self.pool) as conn:
             with conn.cursor() as cur:
-                cur.executemany(query, rows)
+                # execute_values: single multi-row upsert; fetch RETURNING rows to count
+                # how many were actually written (inserted or changed).
+                returned = execute_values(cur, query.as_string(conn), rows,
+                                          page_size=1000, fetch=True)
             conn.commit()
+        return len(returned)
 
     # ------------------------------------------------------------------
     # Debug helper
@@ -947,10 +972,10 @@ class DataUpdater(DataUpdaterMeta):
                         if klines:
                             self.last_timeframe_datetime = datetime.datetime.fromtimestamp(
                                 klines[-1][0] / 1000, tz=pytz.utc)
+                            written = self.insert_klines_to_table(table_name, klines)
                             logger.info(
                                 f"{self.__class__.__name__} #{self.idnum}: Updater - {table_name} - "
-                                f"timeframes: {len(klines)}. Last timeframe: {self.last_timeframe_datetime}")
-                            self.insert_klines_to_table(table_name, klines)
+                                f"written: {written}/{len(klines)}. Last timeframe: {self.last_timeframe_datetime}")
 
                         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Updating '{table_name}' finished...")
                     # for kline in klines:

@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = '1.0.3'  # freeze fix A+B; update_spot_data fetch window widened to 365*5 days
+__version__ = '1.0.4'  # overlap=3; write only on diff (ON CONFLICT WHERE distinct) + report rows written
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -56,7 +56,7 @@ def _open_time_result_to_ms(v):
 
 # Number of trailing closed bars re-read on every live update, so a partial bar that
 # slipped through earlier is re-fetched closed and corrected by the upsert (B: tail overlap).
-LIVE_OVERLAP_BARS = 5
+LIVE_OVERLAP_BARS = 3
 
 
 def drop_unclosed_klines(klines: list) -> list:
@@ -223,6 +223,18 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
                     quote_asset_volume = EXCLUDED.quote_asset_volume, trades = EXCLUDED.trades,
                     taker_buy_base = EXCLUDED.taker_buy_base, taker_buy_quote = EXCLUDED.taker_buy_quote,
                     ignored = EXCLUDED.ignored
+                -- only write when the row actually changed (skip no-op upserts of unchanged bars)
+                WHERE (
+                    {table_name}.open, {table_name}.high, {table_name}.low, {table_name}.close,
+                    {table_name}.volume, {table_name}.close_time, {table_name}.quote_asset_volume,
+                    {table_name}.trades, {table_name}.taker_buy_base, {table_name}.taker_buy_quote,
+                    {table_name}.ignored
+                ) IS DISTINCT FROM (
+                    EXCLUDED.open, EXCLUDED.high, EXCLUDED.low, EXCLUDED.close,
+                    EXCLUDED.volume, EXCLUDED.close_time, EXCLUDED.quote_asset_volume,
+                    EXCLUDED.trades, EXCLUDED.taker_buy_base, EXCLUDED.taker_buy_quote,
+                    EXCLUDED.ignored
+                )
                 RETURNING 1
             )
             SELECT COUNT(*) FROM inserted;
