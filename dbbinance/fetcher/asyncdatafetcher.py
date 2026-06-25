@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = '1.0.2'  # partial-bar freeze fix: drop unclosed candle (A), tail-overlap re-read + upsert (B)
+__version__ = '1.0.3'  # freeze fix A+B; update_spot_data fetch window widened to 365*5 days
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -842,7 +842,7 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                     # slipped through earlier is re-fetched closed and corrected by the upsert.
                     start_open_time = start_open_time - datetime.timedelta(
                         minutes=self.convert_timeframe_to_min(timeframe) * LIVE_OVERLAP_BARS)
-                    until_open_time = start_open_time + datetime.timedelta(days=365)
+                    until_open_time = start_open_time + datetime.timedelta(days=365 * 5)
 
                     start_open_time = start_open_time.strftime("%d %b %Y %H:%M:%S")
                     until_open_time = until_open_time.strftime("%d %b %Y %H:%M:%S")
