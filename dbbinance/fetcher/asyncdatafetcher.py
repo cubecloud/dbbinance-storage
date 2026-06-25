@@ -974,7 +974,9 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
             """ if updater is not running, check and repair database before we run updater """
             await self.check_first_run()
 
-            back_start_time = ceil_time(datetime.datetime.now(), "1m").replace(second=2, microsecond=0)
+            # Start a few seconds after the minute boundary so the just-closed bar is finalized
+            # on Binance (clock skew / late-reported trades); the unclosed bar is dropped anyway (A).
+            back_start_time = ceil_time(datetime.datetime.now(), "1m").replace(second=5, microsecond=0)
             print('Updater will start at', back_start_time)
             # Add a new job to the scheduler to run the update_database method every minute
             self.async_scheduler.add_job(self.update_spot_data,

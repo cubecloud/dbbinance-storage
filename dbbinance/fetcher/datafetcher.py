@@ -1049,7 +1049,9 @@ class DataUpdater(DataUpdaterMeta):
             """ if updater is not running, check and repair database before we run updater """
             self.check_first_run()
 
-            back_start_time = ceil_time(datetime.datetime.now(), "1m")
+            # Start a few seconds after the minute boundary so the just-closed bar is finalized
+            # on Binance (clock skew / late-reported trades); the unclosed bar is dropped anyway (A).
+            back_start_time = ceil_time(datetime.datetime.now(), "1m").replace(second=5, microsecond=0)
             # Add a new job to the scheduler to run the update_database method every minute
             self.back_scheduler.add_job(self.update_spot_data,
                                         'interval',
