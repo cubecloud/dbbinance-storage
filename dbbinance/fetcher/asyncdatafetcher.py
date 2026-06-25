@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = 1.0  # remove legacy 'id' crutches from OHLCV read/repair; read defaults -> newsql_cols (no id)
+__version__ = 1.01  # partial-bar freeze fix: drop unclosed candle (A), tail-overlap re-read + upsert (B)
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -52,6 +52,23 @@ def _open_time_result_to_ms(v):
     raise TypeError(
         f"Cannot convert async open_time result of type {type(v).__name__} to ms"
     )
+
+
+# Number of trailing closed bars re-read on every live update, so a partial bar that
+# slipped through earlier is re-fetched closed and corrected by the upsert (B: tail overlap).
+LIVE_OVERLAP_BARS = 5
+
+
+def drop_unclosed_klines(klines: list) -> list:
+    """Return only closed candles (close_time < now).
+
+    Binance returns the current still-forming minute as the last element; persisting it
+    freezes a partial bar (volume~0) that ON CONFLICT can never correct (A: partial-bar
+    freeze fix). Expects a list of klines with close_time (ms) at index 6."""
+    if not klines:
+        return klines
+    now_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
+    return [kline for kline in klines if int(kline[6]) < now_ms]
 
 
 class _AsyncSchemaCache:
@@ -160,6 +177,13 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
 
         try:
             arr = np.atleast_2d(klines).astype(dtype=object)
+            # A (partial-bar freeze fix): drop the still-forming candle. Binance returns the
+            # current unclosed minute as the last element; persisting it freezes a partial bar
+            # (volume~0) that ON CONFLICT can never correct. Keep only close_time (idx 6) < now.
+            now_ms = int(datetime.datetime.now(timezone.utc).timestamp() * 1000)
+            arr = arr[arr[:, 6].astype(np.int64) < now_ms]
+            if arr.shape[0] == 0:
+                return 0
             # Process timestamps (ms -> datetime UTC) in one pass
             open_time = []
             close_time = []
@@ -193,7 +217,12 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
                     $7::timestamptz[],
                     $8::float8[], $9::int[], $10::float8[], $11::float8[], $12::float8[]
                 )
-                ON CONFLICT (open_time) DO NOTHING
+                ON CONFLICT (open_time) DO UPDATE SET
+                    open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                    close = EXCLUDED.close, volume = EXCLUDED.volume, close_time = EXCLUDED.close_time,
+                    quote_asset_volume = EXCLUDED.quote_asset_volume, trades = EXCLUDED.trades,
+                    taker_buy_base = EXCLUDED.taker_buy_base, taker_buy_quote = EXCLUDED.taker_buy_quote,
+                    ignored = EXCLUDED.ignored
                 RETURNING 1
             )
             SELECT COUNT(*) FROM inserted;
@@ -808,8 +837,11 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                     table_name = f"{base_table_name}_{symbol_pair}_{timeframe}".lower()
                     start_open_time = await self.get_max_open_time(table_name)
                     start_open_time = datetime.datetime.fromtimestamp(start_open_time / 1000, tz=pytz.utc)
-                    start_open_time = start_open_time + datetime.timedelta(
-                        minutes=self.convert_timeframe_to_min(timeframe))
+                    # B1 (tail overlap): start LIVE_OVERLAP_BARS before max_open_time (instead of
+                    # +1 bar) so the last closed bars are re-read each run and any partial bar that
+                    # slipped through earlier is re-fetched closed and corrected by the upsert.
+                    start_open_time = start_open_time - datetime.timedelta(
+                        minutes=self.convert_timeframe_to_min(timeframe) * LIVE_OVERLAP_BARS)
                     until_open_time = start_open_time + datetime.timedelta(days=365)
 
                     start_open_time = start_open_time.strftime("%d %b %Y %H:%M:%S")
@@ -828,13 +860,13 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
                     except BinanceAPIException as error_msg:
                         logger.debug(f"{self.__class__.__name__} #{self.idnum}: Updater - exception {error_msg}")
                     else:
+                        # A: drop the still-forming candle before persisting / logging, so
+                        # last_timeframe_datetime names a bar we actually wrote.
+                        klines = drop_unclosed_klines(klines)
                         if klines:
                             self.last_timeframe_datetime = datetime.datetime.fromtimestamp(klines[-1][0] / 1000,
                                                                                            tz=pytz.utc)
-                            if len(klines) == 1:
-                                result = await self.insert_kline_to_table(table_name, klines[0])
-                            else:
-                                result = await self.insert_klines_to_table(table_name, klines)
+                            result = await self.insert_klines_to_table(table_name, klines)
 
                             logger.info(
                                 f"{self.__class__.__name__} #{self.idnum}: Updater - {table_name} - "
@@ -942,7 +974,9 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
             """ if updater is not running, check and repair database before we run updater """
             await self.check_first_run()
 
-            back_start_time = ceil_time(datetime.datetime.now(), "1m").replace(second=2, microsecond=0)
+            # Start a few seconds after the minute boundary so the just-closed bar is finalized
+            # on Binance (clock skew / late-reported trades); the unclosed bar is dropped anyway (A).
+            back_start_time = ceil_time(datetime.datetime.now(), "1m").replace(second=5, microsecond=0)
             print('Updater will start at', back_start_time)
             # Add a new job to the scheduler to run the update_database method every minute
             self.async_scheduler.add_job(self.update_spot_data,
