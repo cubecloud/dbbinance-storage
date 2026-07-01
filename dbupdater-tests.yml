@@ -25,7 +25,7 @@ dependencies:
   - pytest>=7.0.0
   - pytest-asyncio>=0.21.0
   - pip:
-      - git+https://github.com/cubecloud/dbbinance-storage.git@v1.0.4
+      - git+https://github.com/cubecloud/dbbinance-storage.git@v1.0.5
       - git+https://github.com/cubecloud/secureapikey.git
       - git+https://github.com/cubecloud/mlthread-tools.git
 prefix: /home/cubecloud/anaconda3/envs/dbupdater-tests

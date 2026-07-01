@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = '1.0.4'  # overlap=3; write only on diff (ON CONFLICT WHERE distinct) + report rows written
+__version__ = '1.0.5'  # resample_1m flag: 1m passthrough (read DB directly) when resample_1m=False
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -1166,6 +1166,7 @@ ORDER BY bin_label
                                     cached=False,
                                     last_full_bar: bool = True,
                                     use_extended_cols: bool = False,
+                                    resample_1m: bool = True,
                                     ):
         use_cols = self._resolve_use_cols(use_cols, use_extended_cols)
         # prepare the start and end timestamps, convert them to datetime if necessary
@@ -1238,9 +1239,15 @@ ORDER BY bin_label
             agg_dict = self._get_agg_dict(use_cols)
             freq = convert_timeframe_to_freq(to_timeframe)
 
-            # label='left', closed='left' -> bar [T, T+freq) labeled by its START == Binance
-            # native kline convention (openTime = bin start). Verified vs Binance API.
-            resampled_df = resampled_df.resample(freq, label='left', closed='left', origin=origin).agg(agg_dict)
+            if self._timeframe_to_ms(to_timeframe) == 60_000 and not resample_1m:
+                # 1m passthrough (resample_1m=False): data is already at 1-minute resolution, so
+                # resampling is an identity op (and would NaN-fill missing minutes). Take the rows
+                # as-is, only selecting the aggregated column set so the output contract stays identical.
+                resampled_df = resampled_df[list(agg_dict.keys())]
+            else:
+                # label='left', closed='left' -> bar [T, T+freq) labeled by its START == Binance
+                # native kline convention (openTime = bin start). Verified vs Binance API.
+                resampled_df = resampled_df.resample(freq, label='left', closed='left', origin=origin).agg(agg_dict)
             if last_full_bar:
                 resampled_df = self._drop_partial_tail(
                     resampled_df, self._timeframe_to_ms(to_timeframe), end_timestamp, time_in_index=True)
@@ -1258,7 +1265,7 @@ ORDER BY bin_label
                 cache_key = self.CM.get_cache_key(table_name=table_name, start_timestamp=start_timestamp,
                                                   end_timestamp=end_timestamp, timeframe=to_timeframe, origin=origin,
                                                   open_time_index=open_time_index, last_full_bar=last_full_bar,
-                                                  use_extended_cols=use_extended_cols)
+                                                  use_extended_cols=use_extended_cols, resample_1m=resample_1m)
 
                 # check if the data is already cached
                 if cache_key in self.CM.cache:
@@ -1290,6 +1297,7 @@ ORDER BY bin_label
             cached: bool = False,
             last_full_bar: bool = True,
             use_extended_cols: bool = False,
+            resample_1m: bool = True,
     ) -> pd.DataFrame:
         use_cols = self._resolve_use_cols(use_cols, use_extended_cols)
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
@@ -1298,17 +1306,26 @@ ORDER BY bin_label
         agg_dict = self._get_agg_dict(use_cols)
 
         async def fetch_and_build() -> pd.DataFrame:
-            sql = self._build_pg_resample_query(
-                col_type=col_type,
-                table_name=table_name,
-                freq_ms=freq_ms,
-                use_cols=use_cols,
-                agg_dict=agg_dict,
-            )
-            async with AsyncPool(self.pool) as conn:
-                records = await conn.fetch(sql, start_timestamp, end_timestamp)
-
             out_cols = ['open_time'] + [c for c in use_cols if c != 'open_time']
+            if freq_ms == 60_000 and not resample_1m:
+                # 1m passthrough (resample_1m=False): read rows directly, skip the (identity) resample query.
+                query = f"""
+                    SELECT {', '.join(out_cols)}
+                    FROM {table_name}
+                    WHERE open_time >= $1 AND open_time <= $2
+                    ORDER BY open_time
+                """
+            else:
+                query = self._build_pg_resample_query(
+                    col_type=col_type,
+                    table_name=table_name,
+                    freq_ms=freq_ms,
+                    use_cols=use_cols,
+                    agg_dict=agg_dict,
+                )
+            async with AsyncPool(self.pool) as conn:
+                records = await conn.fetch(query, start_timestamp, end_timestamp)
+
             df = pd.DataFrame(records, columns=out_cols)
 
             if use_dtypes:
@@ -1337,6 +1354,7 @@ ORDER BY bin_label
                 open_time_index=open_time_index,
                 last_full_bar=last_full_bar,
                 use_extended_cols=use_extended_cols,
+                resample_1m=resample_1m,
                 method='pg',
             )
             if cache_key in self.CM.cache:

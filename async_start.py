@@ -5,7 +5,7 @@ from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.fetcher.asyncdatafetcher import AsyncDataUpdater
 from dbbinance.fetcher.asyncsqlbase import create_pool
 
-version = '1.0.4'
+version = '1.0.5'
 
 
 async def main():
