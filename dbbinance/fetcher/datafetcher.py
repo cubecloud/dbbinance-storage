@@ -22,7 +22,7 @@ from binance.exceptions import BinanceAPIException
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-__version__ = '1.0.5'  # resample_1m flag: 1m passthrough (read DB directly) when resample_1m=False
+__version__ = '1.0.6'  # (async sibling hardens SQL identifiers; sync already uses sql.Identifier)
 
 logger = logging.getLogger()
 

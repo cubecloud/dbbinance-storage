@@ -31,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dbbinance.config.configpostgresql import ConfigPostgreSQL
 from dbbinance.config.configbinance import ConfigBinance
 
-__version__ = '1.0.5'  # resample_1m flag: 1m passthrough (read DB directly) when resample_1m=False
+__version__ = '1.0.6'  # security: quote all async SQL identifiers (_quote_ident) — inject-safe like sync
 
 # Match the sync module's constants so callers can branch on either.
 BIGINT = "bigint"
@@ -57,6 +57,13 @@ def _open_time_result_to_ms(v):
 # Number of trailing closed bars re-read on every live update, so a partial bar that
 # slipped through earlier is re-fetched closed and corrected by the upsert (B: tail overlap).
 LIVE_OVERLAP_BARS = 3
+
+
+def _quote_ident(identifier: str) -> str:
+    """Quote a SQL identifier for asyncpg (which has no psycopg2 sql.Identifier): wrap in
+    double quotes and double any embedded double-quote, matching PostgreSQL's quote_ident()
+    rule. Neutralizes identifier injection in f-string-built queries (values still use $-params)."""
+    return '"' + str(identifier).replace('"', '""') + '"'
 
 
 def drop_unclosed_klines(klines: list) -> list:
@@ -123,7 +130,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         return table_name
 
     async def is_data_exists(self, table_name: str) -> bool:
-        query = f"SELECT 1 FROM {table_name} LIMIT 1"
+        query = f"SELECT 1 FROM {_quote_ident(table_name)} LIMIT 1"
         result = await self.asyncdb_mgr.single_select_query(query)
         return result is not None
 
@@ -146,14 +153,17 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             "ignored FLOAT8"
         ]
 
-        query = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(columns_definition)});"
+        qtable = _quote_ident(table_name)
+        query = f"CREATE TABLE IF NOT EXISTS {qtable} ({', '.join(columns_definition)});"
         await self.asyncdb_mgr.modify_query(query)
 
         # Recommended indexes
         await self.asyncdb_mgr.modify_query(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS {table_name}_open_time_idx ON {table_name} (open_time);")
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {_quote_ident(f'{table_name}_open_time_idx')} "
+            f"ON {qtable} (open_time);")
         await self.asyncdb_mgr.modify_query(
-            f"CREATE INDEX IF NOT EXISTS {table_name}_open_time_brin_idx ON {table_name} USING BRIN (open_time);")
+            f"CREATE INDEX IF NOT EXISTS {_quote_ident(f'{table_name}_open_time_brin_idx')} "
+            f"ON {qtable} USING BRIN (open_time);")
 
         logger.debug(f"{self.__class__.__name__}: Created table '{table_name}' with indexes")
 
@@ -204,9 +214,10 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
             taker_buy_quote = arr[:, 10].astype(np.float64)
             ignored = arr[:, 11].astype(np.float64)
 
+            qtable = _quote_ident(table_name)
             query = f"""
             WITH inserted AS (
-                INSERT INTO {table_name} (
+                INSERT INTO {qtable} (
                     open_time, open, high, low, close, volume, close_time,
                     quote_asset_volume, trades, taker_buy_base, taker_buy_quote, ignored
                 )
@@ -225,10 +236,10 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
                     ignored = EXCLUDED.ignored
                 -- only write when the row actually changed (skip no-op upserts of unchanged bars)
                 WHERE (
-                    {table_name}.open, {table_name}.high, {table_name}.low, {table_name}.close,
-                    {table_name}.volume, {table_name}.close_time, {table_name}.quote_asset_volume,
-                    {table_name}.trades, {table_name}.taker_buy_base, {table_name}.taker_buy_quote,
-                    {table_name}.ignored
+                    {qtable}.open, {qtable}.high, {qtable}.low, {qtable}.close,
+                    {qtable}.volume, {qtable}.close_time, {qtable}.quote_asset_volume,
+                    {qtable}.trades, {qtable}.taker_buy_base, {qtable}.taker_buy_quote,
+                    {qtable}.ignored
                 ) IS DISTINCT FROM (
                     EXCLUDED.open, EXCLUDED.high, EXCLUDED.low, EXCLUDED.close,
                     EXCLUDED.volume, EXCLUDED.close_time, EXCLUDED.quote_asset_volume,
@@ -272,7 +283,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         """Schema-agnostic: accepts int (BIGINT) or datetime (TIMESTAMPTZ)
         from asyncpg. Always returns int Unix-ms — public contract preserved."""
         try:
-            query = f"SELECT MIN(open_time) FROM {table_name}"
+            query = f"SELECT MIN(open_time) FROM {_quote_ident(table_name)}"
             for _ in range(retry + 1):
                 async with AsyncPool(self.pool) as conn:
                     min_open_time = await conn.fetchval(query)
@@ -289,7 +300,7 @@ class AsyncPostgreSQLDatabase(AsyncSQLMeta):
         """Schema-agnostic: accepts int (BIGINT) or datetime (TIMESTAMPTZ)
         from asyncpg. Always returns int Unix-ms — public contract preserved."""
         try:
-            query = f"SELECT MAX(open_time) FROM {table_name}"
+            query = f"SELECT MAX(open_time) FROM {_quote_ident(table_name)}"
             for _ in range(retry + 1):
                 async with AsyncPool(self.pool) as conn:
                     max_open_time = await conn.fetchval(query)
@@ -903,11 +914,11 @@ class AsyncDataUpdater(AsyncDataUpdaterMeta):
 
         start_timestamp, end_timestamp = await self.prepare_start_end(table_name, start, end)
 
-        # Join column names without sql.Identifier and format them into the query string
-        cols_str = ', '.join(['%s'] * len(use_cols)) % tuple(use_cols)
+        # Quote column identifiers (asyncpg has no sql.Identifier) to prevent injection.
+        cols_str = ', '.join(_quote_ident(c) for c in use_cols)
         query = f"""
-            SELECT {cols_str} 
-            FROM {table_name} 
+            SELECT {cols_str}
+            FROM {_quote_ident(table_name)}
             WHERE open_time >= $1
             AND open_time <= $2
             ORDER BY open_time ASC
@@ -1093,7 +1104,7 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
             'sum': 'SUM({col})',
         }
 
-        data_cols = ', '.join(c for c in use_cols if c != 'open_time')
+        data_cols = ', '.join(_quote_ident(c) for c in use_cols if c != 'open_time')
 
         _one_day_ms = 86_400_000
         if freq_ms > _one_day_ms:
@@ -1126,7 +1137,7 @@ class AsyncDataFetcher(AsyncDataUpdaterMeta):
                 )
 
         agg_exprs = ',\n    '.join(
-            _AGG_SQL[fn].format(col=col)
+            _AGG_SQL[fn].format(col=_quote_ident(col))
             for col, fn in agg_dict.items()
         )
 
@@ -1136,7 +1147,7 @@ WITH pre AS (
         {bin_formula} AS bin_label,
         open_time,
         {data_cols}
-    FROM {table_name}
+    FROM {_quote_ident(table_name)}
     WHERE open_time >= $1 AND open_time <= $2
 ),
 binned AS (
@@ -1177,8 +1188,8 @@ ORDER BY bin_label
 
         async def fetch_raw_data():
             query = f"""
-                SELECT {', '.join(use_cols)}
-                FROM {table_name}
+                SELECT {', '.join(_quote_ident(c) for c in use_cols)}
+                FROM {_quote_ident(table_name)}
                 WHERE open_time >= $1
                   AND open_time <= $2
                 ORDER BY open_time ASC
@@ -1308,10 +1319,12 @@ ORDER BY bin_label
         async def fetch_and_build() -> pd.DataFrame:
             out_cols = ['open_time'] + [c for c in use_cols if c != 'open_time']
             if freq_ms == 60_000 and not resample_1m:
-                # 1m passthrough (resample_1m=False): read rows directly, skip the (identity) resample query.
+                # 1m passthrough (resample_1m=False): read rows directly, skip the (identity) resample
+                # query. Identifiers are quoted (asyncpg has no sql.Identifier) so this matches the
+                # sync sibling's sql.Identifier safety; values still use $-params.
                 query = f"""
-                    SELECT {', '.join(out_cols)}
-                    FROM {table_name}
+                    SELECT {', '.join(_quote_ident(c) for c in out_cols)}
+                    FROM {_quote_ident(table_name)}
                     WHERE open_time >= $1 AND open_time <= $2
                     ORDER BY open_time
                 """
