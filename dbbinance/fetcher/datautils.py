@@ -12,7 +12,7 @@ from sklearn.utils import compute_class_weight
 
 from dbbinance.fetcher.constants import Constants
 
-__version__ = 0.0022
+__version__ = 0.0023  # calc_classes_weights: complete weight dict for 3+/quad via num_classes
 
 logger = logging.getLogger()
 
