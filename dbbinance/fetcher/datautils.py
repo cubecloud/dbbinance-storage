@@ -330,24 +330,76 @@ def convert_horizons_df_to_values(x_list: List[pd.DataFrame]) -> List[np.ndarray
     return _temp_data_list
 
 
-def calc_classes_weights(y_data):
-    classes, classes_counts = np.unique(y_data.copy(), return_counts=True)
-    if not len(classes) > 1:
+def calc_classes_weights(y_data, num_classes: Optional[int] = None):
+    """Compute balanced class weights, robust to slices missing one or more classes.
+
+    Two modes:
+      * ``num_classes=None`` (legacy) — weights only for the classes actually present in
+        ``y_data``; a single-label slice falls back to a 2-class dummy. Kept byte-compatible
+        for existing callers that infer the class set from the data.
+      * ``num_classes`` given — always returns a COMPLETE dict over ``range(num_classes)``.
+        A slice that misses a class no longer silently drops it (which would break
+        ``classes_indices`` / ``num_classes`` downstream, e.g. ``Pool.recalc_classes_weights``).
+        Absent classes get the max present weight (treated as the rarest); a single-label
+        slice gives the present class a low dummy weight (0.1) and the rest a high one (0.99).
+
+    Numeric example (num_classes=3, y=[0,0,0,0,2]): present 0 (count 4), 2 (count 1);
+    balanced 5/(2*4)=0.625 and 5/(2*1)=2.5; absent class 1 -> max=2.5 ->
+    {0:0.625, 1:2.5, 2:2.5}, counts [4,0,1].
+
+    Args:
+        y_data: 1-D array/Series of integer class ids.
+        num_classes: total number of classes; if None the set is inferred from ``y_data``.
+
+    Returns:
+        Tuple ``(classes, classes_counts, classes_weights)``: class-id list, per-class
+        counts (0 for classes absent from ``y_data`` when ``num_classes`` is given), and a
+        ``{class_id: weight}`` dict.
+    """
+    y_values = np.asarray(y_data).ravel()
+    present_classes, present_counts = np.unique(y_values, return_counts=True)
+    present_classes = present_classes.astype(int)
+
+    if num_classes is None:
+        # ---- legacy path: present-only classes, 2-class dummy fallback ----
+        if not len(present_classes) > 1:
+            logger.warning(
+                f"{__name__}: Y data have only ONE label. Check the Y data, "
+                f"or make this part longer for unbalanced datasets. Using dummy numbers for 2 classes ")
+            """ Using dummy numbers """
+            if present_classes[0] == 0:
+                classes = [0, 1]
+                sample_weight = [0.99, 0.1]
+            else:
+                classes = [0, 1]
+                sample_weight = [0.1, 0.99]
+            classes_weights = dict(zip(classes, sample_weight))
+            return list(classes), list(present_counts), classes_weights
+        sample_weight = compute_class_weight(class_weight='balanced', classes=present_classes, y=y_values)
+        classes_weights = dict(zip(present_classes.tolist(), sample_weight.tolist()))
+        return present_classes.tolist(), present_counts.tolist(), classes_weights
+
+    # ---- multiclass-safe path: complete dict over all num_classes ----
+    all_classes = list(range(int(num_classes)))
+    classes_counts = [0] * int(num_classes)
+    for present_class, present_count in zip(present_classes.tolist(), present_counts.tolist()):
+        classes_counts[present_class] = int(present_count)
+    if len(present_classes) > 1:
+        sample_weight = compute_class_weight(class_weight='balanced', classes=present_classes, y=y_values)
+        present_class_weights = dict(zip(present_classes.tolist(), sample_weight.tolist()))
+        absent_class_weight = max(present_class_weights.values())    # absent class -> rarest (max) weight
+        classes_weights = {class_id: present_class_weights.get(class_id, absent_class_weight)
+                           for class_id in all_classes}
+    else:
         logger.warning(
             f"{__name__}: Y data have only ONE label. Check the Y data, "
-            f"or make this part longer for unbalanced datasets. Using dummy numbers for 2 classes ")
+            f"or make this part longer for unbalanced datasets. "
+            f"Using dummy numbers for {int(num_classes)} classes ")
         """ Using dummy numbers """
-        if classes[0] == 0:
-            classes = [0, 1]
-            sample_weight = [0.99, 0.1]
-        else:
-            classes = [0, 1]
-            sample_weight = [0.1, 0.99]
-        classes_weights = dict(zip(classes, sample_weight))
-    else:
-        sample_weight = compute_class_weight(class_weight='balanced', classes=classes, y=y_data)
-        classes_weights = dict(zip(classes, sample_weight))
-    return list(classes), list(classes_counts), classes_weights
+        present_class = int(present_classes[0]) if len(present_classes) else 0
+        classes_weights = {class_id: (0.1 if class_id == present_class else 0.99)
+                           for class_id in all_classes}
+    return all_classes, classes_counts, classes_weights
 
 
 def calc_batches(data_length, batch_size, stride) -> int:
